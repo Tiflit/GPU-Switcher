@@ -19,22 +19,21 @@ target_compile_definitions(gpu_tray PRIVATE
 # ── Link libraries ────────────────────────────────────────────────────────────
 # nvapi64.lib is NOT linked — we load nvapi64.dll at runtime.
 target_link_libraries(gpu_tray PRIVATE
-    shell32   # Shell_NotifyIcon
-    user32    # CreateWindow, GetMessage, etc.
-    gdi32     # CreateDIBSection, Ellipse, etc.
+    shell32
+    user32
+    gdi32
 )
 
 # ── MSVC flags + manifest ─────────────────────────────────────────────────────
 if(MSVC)
     target_compile_options(gpu_tray PRIVATE /W4 /WX /permissive-)
 
-    # Embed manifest post-build.
-    # The semicolon in -outputresource:<file>;1 must be escaped as \; in CMake
-    # otherwise CMake splits it into two separate arguments and mt.exe errors.
+    # Embed manifest post-build using a small PowerShell one-liner.
+    # Avoids all CMake semicolon/escaping issues entirely — PowerShell
+    # passes the argument to mt.exe verbatim.
     add_custom_command(TARGET gpu_tray POST_BUILD
-        COMMAND mt.exe -nologo
-            -manifest "${CMAKE_CURRENT_SOURCE_DIR}/gpu_tray.manifest"
-            "-outputresource:$<TARGET_FILE:gpu_tray>\\;1"
+        COMMAND powershell -NoProfile -NonInteractive -Command
+            "mt.exe -nologo -manifest '${CMAKE_CURRENT_SOURCE_DIR}/gpu_tray.manifest' \"-outputresource:$<TARGET_FILE:gpu_tray>;1\""
         COMMENT "Embedding manifest into gpu_tray.exe"
     )
 endif()
