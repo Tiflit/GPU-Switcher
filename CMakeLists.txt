@@ -17,20 +17,21 @@ target_compile_definitions(gpu_tray PRIVATE
 )
 
 # ── Link libraries ────────────────────────────────────────────────────────────
-# nvapi64.lib is NOT linked — we load nvapi64.dll at runtime.
+# WMI requires wbemuuid + ole32 + oleaut32.
+# No nvapi64.lib — NVAPI approach is no longer used.
 target_link_libraries(gpu_tray PRIVATE
     shell32
     user32
     gdi32
+    ole32
+    oleaut32
+    wbemuuid
 )
 
 # ── MSVC flags + manifest ─────────────────────────────────────────────────────
 if(MSVC)
     target_compile_options(gpu_tray PRIVATE /W4 /WX /permissive-)
 
-    # Embed manifest post-build using a small PowerShell one-liner.
-    # Avoids all CMake semicolon/escaping issues entirely — PowerShell
-    # passes the argument to mt.exe verbatim.
     add_custom_command(TARGET gpu_tray POST_BUILD
         COMMAND powershell -NoProfile -NonInteractive -Command
             "mt.exe -nologo -manifest '${CMAKE_CURRENT_SOURCE_DIR}/gpu_tray.manifest' \"-outputresource:$<TARGET_FILE:gpu_tray>;1\""
