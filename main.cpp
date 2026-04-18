@@ -1,8 +1,7 @@
 /*
  * gpu_tray — Lenovo Legion dGPU Display Switcher
- * Improvements:
- *  - Uses ComPtr for all COM objects (no leaks, higher reliability)
- *  - Checks for Administrator privileges at startup
+ * - Uses ComPtr for COM (no leaks)
+ * - Checks for Administrator privileges at startup
  */
 
 #include <Windows.h>
@@ -272,7 +271,8 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     bi.bmiHeader = bih;
 
     void* bits = nullptr;
-    HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP hBmp = CreateDIBSection(
+        hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
 
     RECT rc = {0,0,SZ,SZ};
@@ -306,7 +306,9 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     HBITMAP hOldM = (HBITMAP)SelectObject(hdcMask, hMask);
     SetBkColor(hdcMem, RGB(0,0,0));
     BitBlt(hdcMask, 0, 0, SZ, SZ, hdcMem, 0, 0, SRCCOPY);
+
     SelectObject(hdcMask, hOldM);
+    SelectObject(hdcMem, hOld);
 
     ICONINFO ii = {};
     ii.fIcon = TRUE;
