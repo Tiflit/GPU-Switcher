@@ -5,7 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 add_executable(gpu_tray WIN32
-    main.cpp
+main.cpp
+)
+add_executable(dummy_tray WIN32
+dummy_tray.cpp
 )
 
 # Rename the final executable to GPU-Switcher.exe
