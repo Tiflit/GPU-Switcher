@@ -1,9 +1,3 @@
-# .github/workflows/build.yml
-# Builds gpu_tray.exe on a free Windows GitHub Actions runner.
-# No local toolchain needed — just push and download the artifact.
-#
-# Trigger: every push to main, or manually via Actions → Run workflow.
-
 name: Build gpu_tray
 
 on:
@@ -11,39 +5,33 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:   # allows manual trigger from the Actions tab
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-windows:
-    runs-on: windows-latest   # free Windows Server 2022 runner with MSVC 2022
+    runs-on: windows-latest
 
     steps:
-      # ── 1. Checkout source ────────────────────────────────────────────────
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
-      # ── 2. Set up MSVC environment (Visual Studio 2022) ───────────────────
       - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: x64   # 64-bit build targeting x64 Windows
+          arch: x64
 
-      # ── 3. Configure with CMake ───────────────────────────────────────────
       - name: Configure CMake
-        run: >
-          cmake -B build
-          -G "NMake Makefiles"
-          -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
 
-      # ── 4. Build ──────────────────────────────────────────────────────────
       - name: Build
         run: cmake --build build --config Release
 
-      # ── 5. Upload gpu_tray.exe as a downloadable artifact ─────────────────
-      #    Go to Actions → your workflow run → Artifacts section to download.
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: gpu_tray-x64
           path: build/gpu_tray.exe
-          retention-days: 30   # keep for 30 days; free tier limit is 90 days
+          retention-days: 30
