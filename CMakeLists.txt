@@ -18,7 +18,7 @@ target_compile_definitions(gpu_tray PRIVATE
 
 # ── Link libraries ────────────────────────────────────────────────────────────
 # WMI requires wbemuuid + ole32 + oleaut32.
-# No nvapi64.lib — NVAPI approach is no longer used.
+# DXGI is used to detect GPU vendors / names for tooltips and icons.
 target_link_libraries(gpu_tray PRIVATE
     shell32
     user32
@@ -26,6 +26,7 @@ target_link_libraries(gpu_tray PRIVATE
     ole32
     oleaut32
     wbemuuid
+    dxgi
 )
 
 # ── MSVC flags + manifest ─────────────────────────────────────────────────────
