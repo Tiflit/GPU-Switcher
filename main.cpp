@@ -38,13 +38,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     // Register a tiny hidden window
     WNDCLASSW wc = {};
-    wc.style         = CS_OWNDC;          // <── NVIDIA-detectable hint
+    wc.style         = CS_OWNDC;          // NVIDIA-detectable hint
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
     wc.lpszClassName = L"TrayHookClass";
     RegisterClassW(&wc);
 
-    // Hidden window with a title (Option 1 already applied)
+    // Hidden window with a title
     HWND hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         wc.lpszClassName,
@@ -53,6 +53,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         0, 0, 0, 0,
         nullptr, nullptr, hInst, nullptr
     );
+
+    // ────────────────────────────────────────────────
+    // Option 3: Create and release a dummy GDI DC
+    // ────────────────────────────────────────────────
+    {
+        HDC hdc = GetDC(hwnd);
+        ReleaseDC(hwnd, hdc);
+    }
+    // This is enough to make NVIDIA detect the process.
 
     // Add tray icon
     NOTIFYICONDATAW nid = {};
