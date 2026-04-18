@@ -1,33 +1,31 @@
 /*
- * gpu_tray — Lenovo Legion dGPU Display Switcher (NVAPI-only)
- * - Attempts to force dGPU ownership using NVIDIA NVAPI
- * - Automatic switch to dGPU on launch
+ * gpu_tray — Lenovo Legion dGPU Display Switcher
+ * - Automatic attempt to switch to dGPU on launch (via Lenovo WMI)
+ * - Creates/updates NVIDIA profile for gpu-switcher.exe (prefer dGPU)
  * - Log file overwritten on each launch (gpu_tray.log)
  * - Correct GPU detection (Intel = iGPU, NVIDIA/AMD = dGPU)
  * - Uses ComPtr for COM (no leaks)
  * - Single-file implementation
- *
- * NOTE:
- *  - Requires NVIDIA NVAPI (nvapi.h + nvapi64.lib or nvapi.lib)
- *  - This uses NVAPI to request dGPU display ownership; behavior depends on
- *    firmware/driver and may still be overridden by Advanced Optimus logic.
  */
 
 #include <Windows.h>
 #include <shellapi.h>
+#include <wbemidl.h>
+#include <comdef.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <string>
 #include <fstream>
 #include <strsafe.h>
-
-// NVAPI
-#include "nvapi.h"
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "nvapi64.lib") // or nvapi.lib depending on target
+#pragma comment(lib, "comsuppw.lib") // for _bstr_t
 
 // ============================================================================
 //  Logging (overwrites file on each launch)
@@ -66,7 +64,389 @@ static bool IsAdmin()
 }
 
 // ============================================================================
-//  GPU logic (DXGI + NVAPI)
+//  NVAPI DRS: create/update profile for gpu-switcher.exe
+//  - No nvapi.h / nvapi.lib required (dynamic load)
+//  - Enables dGPU preference / automatic display switching for this EXE
+// ============================================================================
+
+typedef int NvAPI_Status;
+typedef int NvAPI_ShortString[64];
+typedef void* NvDRSSessionHandle;
+typedef void* NvDRSProfileHandle;
+
+#define NVAPI_OK 0
+
+typedef void* (__cdecl* NvAPI_QueryInterface_t)(unsigned int);
+typedef NvAPI_Status (__cdecl* NvAPI_Initialize_t)();
+typedef NvAPI_Status (__cdecl* NvAPI_Unload_t)();
+typedef NvAPI_Status (__cdecl* NvAPI_GetErrorMessage_t)(NvAPI_Status, NvAPI_ShortString);
+
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_CreateSession_t)(NvDRSSessionHandle*);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_DestroySession_t)(NvDRSSessionHandle);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_LoadSettings_t)(NvDRSSessionHandle);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_SaveSettings_t)(NvDRSSessionHandle);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_CreateProfile_t)(NvDRSSessionHandle, void*);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_FindProfileByName_t)(NvDRSSessionHandle, const wchar_t*, NvDRSProfileHandle*);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_SetSetting_t)(NvDRSSessionHandle, NvDRSProfileHandle, void*);
+typedef NvAPI_Status (__cdecl* NvAPI_DRS_CreateApplication_t)(NvDRSSessionHandle, NvDRSProfileHandle, void*);
+
+static const unsigned int ID_NvAPI_Initialize             = 0x0150E828;
+static const unsigned int ID_NvAPI_Unload                 = 0xD22BDD7E;
+static const unsigned int ID_NvAPI_GetErrorMessage        = 0x6C2D048C;
+static const unsigned int ID_NvAPI_DRS_CreateSession      = 0x694D52E;
+static const unsigned int ID_NvAPI_DRS_DestroySession     = 0xDAD9CFF8;
+static const unsigned int ID_NvAPI_DRS_LoadSettings       = 0x375DBD6B;
+static const unsigned int ID_NvAPI_DRS_SaveSettings       = 0xFCBC7E14;
+static const unsigned int ID_NvAPI_DRS_CreateProfile      = 0xCC176068;
+static const unsigned int ID_NvAPI_DRS_FindProfileByName  = 0x7E4A9A0B;
+static const unsigned int ID_NvAPI_DRS_SetSetting         = 0x577DD202;
+static const unsigned int ID_NvAPI_DRS_CreateApplication  = 0x4347A9DE;
+
+enum NVDRS_SETTING_TYPE {
+    NVDRS_DWORD_TYPE = 0,
+};
+
+struct NVDRS_SETTING {
+    unsigned int version;
+    unsigned int settingId;
+    NVDRS_SETTING_TYPE settingType;
+    union {
+        unsigned int u32CurrentValue;
+    };
+};
+
+#define NVDRS_SETTING_VER (sizeof(NVDRS_SETTING) | (1u << 16))
+
+struct NVDRS_PROFILE {
+    unsigned int version;
+    wchar_t profileName[2048];
+};
+
+#define NVDRS_PROFILE_VER (sizeof(NVDRS_PROFILE) | (1u << 16))
+
+struct NVDRS_APPLICATION {
+    unsigned int version;
+    wchar_t appName[260];
+    wchar_t userFriendlyName[260];
+    wchar_t launcher[260];
+};
+
+#define NVDRS_APPLICATION_VER (sizeof(NVDRS_APPLICATION) | (1u << 16))
+
+static const unsigned int SHIM_RENDERING_MODE_ID    = 0x10F9DC81;
+static const unsigned int SHIM_RENDERING_OPTIONS_ID = 0x10F9DC82;
+
+enum {
+    SHIM_RENDERING_MODE_INTEGRATED = 0,
+    SHIM_RENDERING_MODE_ENABLE     = 1,
+    SHIM_RENDERING_MODE_DISABLE    = 2,
+};
+
+enum {
+    SHIM_RENDERING_OPTIONS_DEFAULT_RENDERING_MODE = 0x00000000,
+    SHIM_RENDERING_OPTIONS_ENABLE_DGPU           = 0x00000001,
+};
+
+static void NvLogError(NvAPI_GetErrorMessage_t getErr, NvAPI_Status st, const wchar_t* where)
+{
+    if (!getErr) return;
+    NvAPI_ShortString msg = {};
+    getErr(st, msg);
+    std::wstring wmsg = L"NVAPI error in ";
+    wmsg += where;
+    wmsg += L": ";
+    wmsg += std::wstring((wchar_t*)msg);
+    Log(wmsg);
+}
+
+static void EnsureNvidiaProfileForGpuSwitcher()
+{
+    HMODULE hNvApi = LoadLibraryW(L"nvapi64.dll");
+    if (!hNvApi)
+    {
+        Log(L"NVAPI: nvapi64.dll not found");
+        return;
+    }
+
+    auto NvAPI_QueryInterface =
+        (NvAPI_QueryInterface_t)GetProcAddress(hNvApi, "nvapi_QueryInterface");
+    if (!NvAPI_QueryInterface)
+    {
+        Log(L"NVAPI: nvapi_QueryInterface not found");
+        FreeLibrary(hNvApi);
+        return;
+    }
+
+    auto NvAPI_Initialize      = (NvAPI_Initialize_t)     NvAPI_QueryInterface(ID_NvAPI_Initialize);
+    auto NvAPI_Unload          = (NvAPI_Unload_t)         NvAPI_QueryInterface(ID_NvAPI_Unload);
+    auto NvAPI_GetErrorMessage = (NvAPI_GetErrorMessage_t)NvAPI_QueryInterface(ID_NvAPI_GetErrorMessage);
+    auto NvAPI_DRS_CreateSession     = (NvAPI_DRS_CreateSession_t)    NvAPI_QueryInterface(ID_NvAPI_DRS_CreateSession);
+    auto NvAPI_DRS_DestroySession    = (NvAPI_DRS_DestroySession_t)   NvAPI_QueryInterface(ID_NvAPI_DRS_DestroySession);
+    auto NvAPI_DRS_LoadSettings      = (NvAPI_DRS_LoadSettings_t)     NvAPI_QueryInterface(ID_NvAPI_DRS_LoadSettings);
+    auto NvAPI_DRS_SaveSettings      = (NvAPI_DRS_SaveSettings_t)     NvAPI_QueryInterface(ID_NvAPI_DRS_SaveSettings);
+    auto NvAPI_DRS_CreateProfile     = (NvAPI_DRS_CreateProfile_t)    NvAPI_QueryInterface(ID_NvAPI_DRS_CreateProfile);
+    auto NvAPI_DRS_FindProfileByName = (NvAPI_DRS_FindProfileByName_t)NvAPI_QueryInterface(ID_NvAPI_DRS_FindProfileByName);
+    auto NvAPI_DRS_SetSetting        = (NvAPI_DRS_SetSetting_t)       NvAPI_QueryInterface(ID_NvAPI_DRS_SetSetting);
+    auto NvAPI_DRS_CreateApplication = (NvAPI_DRS_CreateApplication_t)NvAPI_QueryInterface(ID_NvAPI_DRS_CreateApplication);
+
+    if (!NvAPI_Initialize || !NvAPI_DRS_CreateSession || !NvAPI_DRS_LoadSettings ||
+        !NvAPI_DRS_SaveSettings || !NvAPI_DRS_FindProfileByName || !NvAPI_DRS_CreateProfile ||
+        !NvAPI_DRS_SetSetting || !NvAPI_DRS_CreateApplication)
+    {
+        Log(L"NVAPI: one or more DRS functions missing");
+        FreeLibrary(hNvApi);
+        return;
+    }
+
+    NvAPI_Status st = NvAPI_Initialize();
+    if (st != NVAPI_OK)
+    {
+        NvLogError(NvAPI_GetErrorMessage, st, L"NvAPI_Initialize");
+        FreeLibrary(hNvApi);
+        return;
+    }
+
+    NvDRSSessionHandle hSession = nullptr;
+    st = NvAPI_DRS_CreateSession(&hSession);
+    if (st != NVAPI_OK)
+    {
+        NvLogError(NvAPI_GetErrorMessage, st, L"DRS_CreateSession");
+        NvAPI_Unload();
+        FreeLibrary(hNvApi);
+        return;
+    }
+
+    st = NvAPI_DRS_LoadSettings(hSession);
+    if (st != NVAPI_OK)
+    {
+        NvLogError(NvAPI_GetErrorMessage, st, L"DRS_LoadSettings");
+        NvAPI_DRS_DestroySession(hSession);
+        NvAPI_Unload();
+        FreeLibrary(hNvApi);
+        return;
+    }
+
+    const wchar_t* profileName = L"GPU Switcher Profile";
+
+    NvDRSProfileHandle hProfile = nullptr;
+    st = NvAPI_DRS_FindProfileByName(hSession, profileName, &hProfile);
+    if (st != NVAPI_OK || !hProfile)
+    {
+        NVDRS_PROFILE prof = {};
+        prof.version = NVDRS_PROFILE_VER;
+        StringCchCopyW(prof.profileName, ARRAYSIZE(prof.profileName), profileName);
+
+        st = NvAPI_DRS_CreateProfile(hSession, &prof);
+        if (st != NVAPI_OK)
+        {
+            NvLogError(NvAPI_GetErrorMessage, st, L"DRS_CreateProfile");
+            NvAPI_DRS_DestroySession(hSession);
+            NvAPI_Unload();
+            FreeLibrary(hNvApi);
+            return;
+        }
+
+        st = NvAPI_DRS_FindProfileByName(hSession, profileName, &hProfile);
+        if (st != NVAPI_OK || !hProfile)
+        {
+            NvLogError(NvAPI_GetErrorMessage, st, L"DRS_FindProfileByName (after create)");
+            NvAPI_DRS_DestroySession(hSession);
+            NvAPI_Unload();
+            FreeLibrary(hNvApi);
+            return;
+        }
+    }
+
+    {
+        NVDRS_APPLICATION app = {};
+        app.version = NVDRS_APPLICATION_VER;
+        StringCchCopyW(app.appName, ARRAYSIZE(app.appName), L"gpu-switcher.exe");
+        StringCchCopyW(app.userFriendlyName, ARRAYSIZE(app.userFriendlyName), L"GPU Switcher");
+        app.launcher[0] = L'\0';
+
+        st = NvAPI_DRS_CreateApplication(hSession, hProfile, &app);
+        if (st != NVAPI_OK)
+        {
+            NvLogError(NvAPI_GetErrorMessage, st, L"DRS_CreateApplication");
+        }
+    }
+
+    {
+        NVDRS_SETTING s = {};
+        s.version = NVDRS_SETTING_VER;
+        s.settingId = SHIM_RENDERING_MODE_ID;
+        s.settingType = NVDRS_DWORD_TYPE;
+        s.u32CurrentValue = SHIM_RENDERING_MODE_ENABLE;
+
+        st = NvAPI_DRS_SetSetting(hSession, hProfile, &s);
+        if (st != NVAPI_OK)
+            NvLogError(NvAPI_GetErrorMessage, st, L"DRS_SetSetting(SHIM_RENDERING_MODE)");
+    }
+
+    {
+        NVDRS_SETTING s = {};
+        s.version = NVDRS_SETTING_VER;
+        s.settingId = SHIM_RENDERING_OPTIONS_ID;
+        s.settingType = NVDRS_DWORD_TYPE;
+        s.u32CurrentValue = SHIM_RENDERING_OPTIONS_ENABLE_DGPU;
+
+        st = NvAPI_DRS_SetSetting(hSession, hProfile, &s);
+        if (st != NVAPI_OK)
+            NvLogError(NvAPI_GetErrorMessage, st, L"DRS_SetSetting(SHIM_RENDERING_OPTIONS)");
+    }
+
+    st = NvAPI_DRS_SaveSettings(hSession);
+    if (st != NVAPI_OK)
+        NvLogError(NvAPI_GetErrorMessage, st, L"DRS_SaveSettings");
+    else
+        Log(L"NVAPI: profile for gpu-switcher.exe updated (dGPU preferred)");
+
+    NvAPI_DRS_DestroySession(hSession);
+    NvAPI_Unload();
+    FreeLibrary(hNvApi);
+}
+
+// ============================================================================
+//  WMI configuration (Lenovo GameZone)
+// ============================================================================
+
+#define GAMEZONE_WMI_NAMESPACE  L"ROOT\\WMI"
+#define GAMEZONE_WMI_CLASS      L"LENOVO_GAMEZONE_DATA"
+#define METHOD_GET_GPU_GPS      L"GetGpuGpsState"
+#define METHOD_SET_GPU_GPS      L"SetGpuGpsState"
+
+#define GPU_MODE_HYBRID   1u
+#define GPU_MODE_DGPU     4u
+
+struct WmiCtx {
+    ComPtr<IWbemLocator>  pLocator;
+    ComPtr<IWbemServices> pServices;
+    bool ok = false;
+};
+
+static WmiCtx g_wmi;
+
+static bool WmiInit()
+{
+    Log(L"WmiInit: starting");
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)
+    {
+        Log(L"WmiInit: CoInitializeEx failed");
+        return false;
+    }
+
+    hr = CoInitializeSecurity(
+        nullptr, -1, nullptr, nullptr,
+        RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        nullptr, EOAC_NONE, nullptr);
+    if (FAILED(hr) && hr != RPC_E_TOO_LATE)
+    {
+        Log(L"WmiInit: CoInitializeSecurity failed");
+        return false;
+    }
+
+    hr = CoCreateInstance(
+        CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&g_wmi.pLocator));
+    if (FAILED(hr))
+    {
+        Log(L"WmiInit: CoCreateInstance(IWbemLocator) failed");
+        return false;
+    }
+
+    hr = g_wmi.pLocator->ConnectServer(
+        _bstr_t(GAMEZONE_WMI_NAMESPACE),
+        nullptr, nullptr, nullptr,
+        0, nullptr, nullptr,
+        &g_wmi.pServices);
+    if (FAILED(hr))
+    {
+        Log(L"WmiInit: ConnectServer failed");
+        return false;
+    }
+
+    hr = CoSetProxyBlanket(
+        g_wmi.pServices.Get(),
+        RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+        RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+        nullptr, EOAC_NONE);
+    if (FAILED(hr))
+    {
+        Log(L"WmiInit: CoSetProxyBlanket failed");
+        return false;
+    }
+
+    g_wmi.ok = true;
+    Log(L"WmiInit: success");
+    return true;
+}
+
+static void WmiShutdown()
+{
+    Log(L"WmiShutdown");
+    g_wmi = {};
+    CoUninitialize();
+}
+
+static HRESULT WmiCallGameZone(
+    const wchar_t* method,
+    const wchar_t* inParamName, DWORD inValue,
+    const wchar_t* outParamName, DWORD* outValue)
+{
+    if (!g_wmi.ok) return E_NOT_VALID_STATE;
+
+    ComPtr<IWbemClassObject> pClass;
+    HRESULT hr = g_wmi.pServices->GetObject(
+        _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pClass, nullptr);
+    if (FAILED(hr)) return hr;
+
+    ComPtr<IEnumWbemClassObject> pEnum;
+    hr = g_wmi.pServices->CreateInstanceEnum(
+        _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pEnum);
+    if (FAILED(hr)) return hr;
+
+    ComPtr<IWbemClassObject> pInst;
+    ULONG uReturned = 0;
+    hr = pEnum->Next(WBEM_INFINITE, 1, &pInst, &uReturned);
+    if (FAILED(hr) || uReturned == 0) return E_NOINTERFACE;
+
+    _variant_t vPath;
+    hr = pInst->Get(L"__PATH", 0, &vPath, nullptr, nullptr);
+    if (FAILED(hr)) return hr;
+
+    ComPtr<IWbemClassObject> pInInst;
+    if (inParamName)
+    {
+        ComPtr<IWbemClassObject> pInClass;
+        hr = pClass->GetMethod(method, 0, &pInClass, nullptr);
+        if (SUCCEEDED(hr))
+        {
+            pInClass->SpawnInstance(0, &pInInst);
+            _variant_t v((long)inValue);
+            pInInst->Put(inParamName, 0, &v, 0);
+        }
+    }
+
+    ComPtr<IWbemClassObject> pOutInst;
+    hr = g_wmi.pServices->ExecMethod(
+        V_BSTR(&vPath), _bstr_t(method), 0, nullptr,
+        pInInst.Get(), &pOutInst, nullptr);
+
+    if (SUCCEEDED(hr) && outParamName && outValue && pOutInst)
+    {
+        _variant_t vOut;
+        if (SUCCEEDED(pOutInst->Get(outParamName, 0, &vOut, nullptr, nullptr)))
+            *outValue = (DWORD)V_I4(&vOut);
+    }
+
+    return hr;
+}
+
+// ============================================================================
+//  GPU logic
 // ============================================================================
 
 enum class GpuMode { Unknown, Hybrid, DGPU };
@@ -80,10 +460,6 @@ struct GpuInfo {
 
 static GpuInfo g_iGpu, g_dGpu;
 static bool g_haveIGpu = false, g_haveDGpu = false;
-
-// NVAPI handles
-static bool g_nvapiOk = false;
-static NvPhysicalGpuHandle g_nvGpu = nullptr;
 
 static void DetectGpus()
 {
@@ -135,73 +511,29 @@ static void DetectGpus()
     Log(L"DetectGpus: done");
 }
 
-static void InitNvApi()
-{
-    Log(L"NVAPI: Initialize");
-
-    NvAPI_Status st = NvAPI_Initialize();
-    if (st != NVAPI_OK)
-    {
-        Log(L"NVAPI: NvAPI_Initialize failed");
-        return;
-    }
-
-    NvPhysicalGpuHandle handles[NVAPI_MAX_PHYSICAL_GPUS] = {};
-    NvU32 count = 0;
-    st = NvAPI_EnumPhysicalGPUs(handles, &count);
-    if (st != NVAPI_OK || count == 0)
-    {
-        Log(L"NVAPI: NvAPI_EnumPhysicalGPUs failed or no GPUs");
-        return;
-    }
-
-    // Pick the first NVIDIA GPU
-    g_nvGpu = handles[0];
-    g_nvapiOk = true;
-    Log(L"NVAPI: initialized, physical GPU handle acquired");
-}
-
-// We cannot reliably query "Hybrid vs dGPU" mode via NVAPI in a generic way,
-// so we treat the mode as "last requested" for UI purposes.
 static GpuMode QueryMode()
 {
-    return g_currentMode;
+    DWORD val = 0;
+    HRESULT hr = WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val);
+    if (FAILED(hr))
+    {
+        Log(L"QueryMode: WmiCallGameZone failed");
+        return GpuMode::Unknown;
+    }
+    return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
 }
 
-// Attempt to force dGPU ownership via NVAPI.
-// This is best-effort and may still be overridden by Advanced Optimus.
 static bool SetMode(GpuMode target)
 {
-    if (!g_nvapiOk || !g_nvGpu)
+    DWORD val = (target == GpuMode::DGPU) ? GPU_MODE_DGPU : GPU_MODE_HYBRID;
+    HRESULT hr = WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr);
+    if (FAILED(hr))
     {
-        Log(L"SetMode: NVAPI not initialized");
+        Log(L"SetMode: WmiCallGameZone failed");
         return false;
     }
-
-    if (target != GpuMode::DGPU)
-    {
-        // We don't try to force iGPU via NVAPI; we just treat this as "Hybrid".
-        Log(L"SetMode: requested HYBRID (no NVAPI action)");
-        g_currentMode = GpuMode::Hybrid;
-        return true;
-    }
-
-    // Try to set display owner to the NVIDIA GPU.
-    // We use NVAPI_DEFAULT_HANDLE to target all displays where possible.
-    Log(L"SetMode: attempting NVAPI GPU_SetDisplayOwner to DGPU");
-
-    NvAPI_Status st = NvAPI_GPU_SetDisplayOwner(g_nvGpu, NVAPI_DEFAULT_HANDLE);
-    if (st == NVAPI_OK)
-    {
-        Log(L"SetMode: NVAPI_GPU_SetDisplayOwner succeeded");
-        g_currentMode = GpuMode::DGPU;
-        return true;
-    }
-    else
-    {
-        Log(L"SetMode: NVAPI_GPU_SetDisplayOwner failed");
-        return false;
-    }
+    Log(target == GpuMode::DGPU ? L"SetMode: requested DGPU" : L"SetMode: requested HYBRID");
+    return true;
 }
 
 static const GpuInfo* ActiveGpuInfo(GpuMode mode)
@@ -339,13 +671,16 @@ static HICON ModeIcon(GpuMode mode)
 
 static std::wstring ModeTooltip(GpuMode mode)
 {
+    if (!g_wmi.ok)
+        return L"GPU mode unknown — WMI unavailable";
+
     const GpuInfo* info = ActiveGpuInfo(mode);
     if (!info)
         return L"GPU mode unknown";
 
     std::wstring tip;
-    if (mode == GpuMode::DGPU) tip = L"dGPU requested — ";
-    else if (mode == GpuMode::Hybrid) tip = L"Hybrid/iGPU requested — ";
+    if (mode == GpuMode::DGPU) tip = L"dGPU active — ";
+    else if (mode == GpuMode::Hybrid) tip = L"Hybrid active — ";
     else tip = L"GPU mode unknown — ";
 
     tip += info->name;
@@ -380,17 +715,17 @@ static void ShowSwitchNotification(GpuMode mode)
     nid.uFlags = NIF_INFO;
 
     StringCchCopyW(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle),
-                    L"GPU display mode change requested");
+                    L"GPU display mode changed");
 
     const GpuInfo* info = ActiveGpuInfo(mode);
     std::wstring msg;
 
     if (!info)
-        msg = L"Requested GPU display change.";
+        msg = L"Display GPU changed.";
     else if (mode == GpuMode::DGPU)
-        msg = L"Requested display to be driven by dGPU: " + info->name;
+        msg = L"Display is now driven by dGPU: " + info->name;
     else
-        msg = L"Requested display to be driven by iGPU: " + info->name;
+        msg = L"Display is now driven by iGPU: " + info->name;
 
     StringCchCopyW(nid.szInfo, ARRAYSIZE(nid.szInfo), msg.c_str());
     nid.dwInfoFlags = NIIF_INFO;
@@ -457,8 +792,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 {
     if (msg == WM_TIMER && wParam == POLL_TIMER_ID)
     {
-        // We don't have a reliable query; just keep the last requested mode.
-        RefreshTrayIcon(g_currentMode);
+        GpuMode live = QueryMode();
+        RefreshTrayIcon(live);
         return 0;
     }
 
@@ -476,16 +811,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (mouseMsg == WM_CONTEXTMENU || mouseMsg == WM_RBUTTONUP)
         {
-            GpuMode mode = g_currentMode;
+            GpuMode mode = QueryMode();
+            RefreshTrayIcon(mode);
 
             const GpuInfo* info = ActiveGpuInfo(mode);
             std::wstring label;
 
-            if (!info)
-                label = L"Requested GPU: Unknown";
+            if (!g_wmi.ok)
+                label = L"Active GPU: Unknown (WMI unavailable)";
+            else if (!info)
+                label = L"Active GPU: Unknown";
             else
             {
-                label = L"Requested GPU: ";
+                label = L"Active GPU: ";
                 label += info->name;
                 if (mode == GpuMode::DGPU) label += L" (dGPU)";
                 else if (mode == GpuMode::Hybrid) label += L" (iGPU display)";
@@ -493,11 +831,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             std::wstring toggleText;
             if (mode == GpuMode::DGPU)
-                toggleText = L"Request iGPU / Hybrid display mode";
+                toggleText = L"Switch to iGPU display mode";
+            else if (mode == GpuMode::Hybrid)
+                toggleText = L"Switch to dGPU display mode";
             else
-                toggleText = L"Request dGPU display mode";
+                toggleText = L"Switch GPU display mode";
 
-            std::wstring exitText = L"Exit (no further GPU changes)";
+            std::wstring exitText = L"Exit and switch to iGPU display mode (";
+            if (g_haveIGpu)
+                exitText += g_iGpu.name;
+            else
+                exitText += L"iGPU";
+            exitText += L")";
 
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
@@ -518,19 +863,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             if (cmd == (int)MenuCmd::Toggle)
             {
-                if (!g_nvapiOk) return 0;
+                if (!g_wmi.ok) return 0;
 
+                GpuMode current = QueryMode();
                 GpuMode target =
-                    (g_currentMode == GpuMode::DGPU) ? GpuMode::Hybrid : GpuMode::DGPU;
+                    (current == GpuMode::DGPU) ? GpuMode::Hybrid : GpuMode::DGPU;
 
                 if (SetMode(target))
                 {
-                    Sleep(1000);
-                    RefreshTrayIcon(target);
+                    Sleep(2000);
+                    GpuMode newMode = QueryMode();
+                    if (newMode != target)
+                    {
+                        Sleep(1000);
+                        newMode = QueryMode();
+                    }
+                    RefreshTrayIcon(newMode);
                 }
             }
             else if (cmd == (int)MenuCmd::Exit)
             {
+                if (g_wmi.ok)
+                {
+                    SetMode(GpuMode::Hybrid);
+                    Sleep(2000);
+                }
                 PostQuitMessage(0);
             }
         }
@@ -546,10 +903,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
-    // Open log file (overwrite each launch)
     g_log.open(L"gpu_tray.log", std::ios::out | std::ios::trunc);
     if (g_log.is_open())
-        g_log << L"gpu_tray started (NVAPI-only)\n";
+        g_log << L"gpu_tray started\n";
 
     if (!IsAdmin())
     {
@@ -561,18 +917,35 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 1;
     }
 
-    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LenovoGpuTrayMutex_NVAPI");
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LenovoGpuTrayMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
         return 0;
 
+    // Create/refresh NVIDIA profile for gpu-switcher.exe (prefer dGPU)
+    EnsureNvidiaProfileForGpuSwitcher();
+
+    if (!WmiInit())
+    {
+        MessageBoxW(nullptr,
+                    L"Lenovo WMI interface (LENOVO_GAMEZONE_DATA) not found.\n"
+                    L"This tool only works on supported Lenovo systems.",
+                    L"GPU Tray Switcher",
+                    MB_ICONERROR | MB_OK);
+        if (hMutex)
+        {
+            ReleaseMutex(hMutex);
+            CloseHandle(hMutex);
+        }
+        return 1;
+    }
+
     DetectGpus();
-    InitNvApi();
     CreateIcons();
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
-    wc.lpszClassName = L"GpuTrayClassNvApi";
+    wc.lpszClassName = L"GpuTrayClass";
     RegisterClassW(&wc);
 
     g_hwnd = CreateWindowExW(
@@ -588,6 +961,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     if (!g_hwnd)
     {
         DestroyIcons();
+        WmiShutdown();
         if (hMutex)
         {
             ReleaseMutex(hMutex);
@@ -598,28 +972,53 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     ShowWindow(g_hwnd, SW_HIDE);
 
-    // Automatic request: dGPU on launch
-    if (g_nvapiOk)
+    if (g_wmi.ok)
     {
-        Log(L"Startup: requesting DGPU via NVAPI");
-        if (SetMode(GpuMode::DGPU))
+        GpuMode initial = QueryMode();
+        Log(L"Startup: initial mode = " +
+            std::wstring(initial == GpuMode::DGPU ? L"DGPU" :
+                         initial == GpuMode::Hybrid ? L"HYBRID" : L"UNKNOWN"));
+
+        if (initial != GpuMode::DGPU)
         {
-            Sleep(1000);
-            AddTrayIcon(GpuMode::DGPU);
-            RefreshTrayIcon(GpuMode::DGPU);
+            if (SetMode(GpuMode::DGPU))
+            {
+                Sleep(2000);
+                GpuMode newMode = QueryMode();
+                if (newMode != GpuMode::DGPU)
+                {
+                    Sleep(1000);
+                    newMode = QueryMode();
+                }
+                Log(L"Startup: mode after switch = " +
+                    std::wstring(newMode == GpuMode::DGPU ? L"DGPU" :
+                                 newMode == GpuMode::Hybrid ? L"HYBRID" : L"UNKNOWN"));
+                g_currentMode = GpuMode::Unknown;
+                AddTrayIcon(newMode);
+                RefreshTrayIcon(newMode);
+            }
+            else
+            {
+                Log(L"Startup: SetMode(DGPU) failed");
+                GpuMode live = QueryMode();
+                g_currentMode = GpuMode::Unknown;
+                AddTrayIcon(live);
+                RefreshTrayIcon(live);
+            }
         }
         else
         {
-            Log(L"Startup: SetMode(DGPU) failed");
-            AddTrayIcon(GpuMode::Unknown);
-            RefreshTrayIcon(GpuMode::Unknown);
+            g_currentMode = GpuMode::Unknown;
+            AddTrayIcon(initial);
+            RefreshTrayIcon(initial);
         }
     }
     else
     {
-        Log(L"Startup: NVAPI not available, cannot request DGPU");
-        AddTrayIcon(GpuMode::Unknown);
-        RefreshTrayIcon(GpuMode::Unknown);
+        GpuMode live = QueryMode();
+        g_currentMode = GpuMode::Unknown;
+        AddTrayIcon(live);
+        RefreshTrayIcon(live);
     }
 
     SetTimer(g_hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, nullptr);
@@ -633,8 +1032,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     KillTimer(g_hwnd, POLL_TIMER_ID);
 
+    if (g_wmi.ok)
+    {
+        SetMode(GpuMode::Hybrid);
+        Sleep(2000);
+    }
+
     RemoveTrayIcon();
     DestroyIcons();
+    WmiShutdown();
 
     if (hMutex)
     {
