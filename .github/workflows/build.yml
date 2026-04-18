@@ -34,4 +34,5 @@ jobs:
         with:
           name: GPU-Switcher-x64
           path: build/GPU-Switcher.exe
+                build/dummy_tray.exe
           retention-days: 30
