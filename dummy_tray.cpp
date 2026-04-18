@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <strsafe.h>
 
 #define WM_TRAY (WM_USER + 1)
 #define TRAY_ID 1
@@ -20,9 +21,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd);
 
-            int cmd = TrackPopupMenu(menu,
-                                     TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                                     pt.x, pt.y, 0, hwnd, nullptr);
+            int cmd = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                pt.x, pt.y, 0, hwnd, nullptr
+            );
 
             DestroyMenu(menu);
 
@@ -37,7 +40,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
-    g_icon = LoadIcon(nullptr, IDI_APPLICATION);
+    g_icon = LoadIconW(nullptr, IDI_APPLICATION);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
@@ -55,14 +58,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    NOTIFYICONDATA nid = {};
+    NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_hwnd;
     nid.uID = TRAY_ID;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_icon;
-    wcscpy_s(nid.szTip, L"Dummy Tray App");
+    StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), L"Dummy Tray App");
+
     Shell_NotifyIconW(NIM_ADD, &nid);
 
     MSG msg;
