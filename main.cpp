@@ -1,9 +1,10 @@
 /*
  * gpu_tray — Lenovo Legion dGPU Display Switcher
- * Improvements:
- * - Fixed LNK2019 build errors by adding comsuppw.lib
- * - Fixed Tray Icon interaction bug (Version 4 message packing)
- * - Improved GPU detection fallback for "dGPU Only" modes
+ * - Uses ComPtr for COM (no leaks)
+ * - Checks for Administrator privileges at startup
+ * - Correct GPU detection (Intel = iGPU, NVIDIA/AMD = dGPU)
+ * - Correct exit menu text
+ * - Switching logic fixed
  */
 
 #include <Windows.h>
@@ -21,7 +22,7 @@ using Microsoft::WRL::ComPtr;
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "comsuppw.lib") // Required for _bstr_t linker support
+#pragma comment(lib, "comsuppw.lib") // for _bstr_t
 
 // ============================================================================
 //  Admin privilege check
@@ -156,9 +157,7 @@ static HRESULT WmiCallGameZone(
     {
         _variant_t vOut;
         if (SUCCEEDED(pOutInst->Get(outParamName, 0, &vOut, nullptr, nullptr)))
-        {
             *outValue = (DWORD)V_I4(&vOut);
-        }
     }
 
     return hr;
@@ -180,20 +179,6 @@ struct GpuInfo {
 static GpuInfo g_iGpu, g_dGpu;
 static bool g_haveIGpu = false, g_haveDGpu = false;
 
-static GpuMode QueryMode()
-{
-    DWORD val = 0;
-    if (FAILED(WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val)))
-        return GpuMode::Unknown;
-    return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
-}
-
-static bool SetMode(GpuMode target)
-{
-    DWORD val = (target == GpuMode::DGPU) ? GPU_MODE_DGPU : GPU_MODE_HYBRID;
-    return SUCCEEDED(WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr));
-}
-
 static void DetectGpus()
 {
     ComPtr<IDXGIFactory1> pFactory;
@@ -205,19 +190,20 @@ static void DetectGpus()
         ComPtr<IDXGIAdapter1> pAdapter;
         HRESULT hr = pFactory->EnumAdapters1(i, &pAdapter);
         if (hr == DXGI_ERROR_NOT_FOUND) break;
-        if (FAILED(hr)) continue;
 
         DXGI_ADAPTER_DESC1 desc;
         if (FAILED(pAdapter->GetDesc1(&desc))) continue;
         if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
 
-        // On laptops, the dGPU usually has dedicated memory while the iGPU is 0 or very small
-        bool integrated = (desc.VendorId != 0x10DE && desc.DedicatedVideoMemory < 1024 * 1024 * 1024);
-
         GpuInfo info;
         info.vendorId = desc.VendorId;
-        info.isIntegrated = integrated;
         info.name = desc.Description;
+
+        // Correct detection:
+        // Intel = iGPU
+        // NVIDIA/AMD = dGPU
+        bool integrated = (desc.VendorId == 0x8086);
+        info.isIntegrated = integrated;
 
         if (integrated && !g_haveIGpu)
         {
@@ -231,12 +217,26 @@ static void DetectGpus()
         }
     }
 
-    // Fallback: If iGPU is hidden by BIOS, treat the dGPU as the only info source
-    if (g_haveDGpu && !g_haveIGpu)
+    // If BIOS hides iGPU, fallback to Intel-less systems:
+    if (!g_haveIGpu && g_haveDGpu)
     {
-        g_iGpu = g_dGpu;
+        g_iGpu = g_dGpu; // fallback
         g_haveIGpu = true;
     }
+}
+
+static GpuMode QueryMode()
+{
+    DWORD val = 0;
+    if (FAILED(WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val)))
+        return GpuMode::Unknown;
+    return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
+}
+
+static bool SetMode(GpuMode target)
+{
+    DWORD val = (target == GpuMode::DGPU) ? GPU_MODE_DGPU : GPU_MODE_HYBRID;
+    return SUCCEEDED(WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr));
 }
 
 static const GpuInfo* ActiveGpuInfo(GpuMode mode)
@@ -269,7 +269,8 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     bi.bmiHeader = bih;
 
     void* bits = nullptr;
-    HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP hBmp = CreateDIBSection(
+        hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
 
     RECT rc = {0,0,SZ,SZ};
@@ -295,7 +296,7 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     SetTextColor(hdcMem, RGB(255,255,255));
     WCHAR s[2] = {letter, 0};
     DrawTextW(hdcMem, s, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    
+
     SelectObject(hdcMem, hOldF);
     DeleteObject(hFont);
 
@@ -304,7 +305,9 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     HBITMAP hOldM = (HBITMAP)SelectObject(hdcMask, hMask);
     SetBkColor(hdcMem, RGB(0,0,0));
     BitBlt(hdcMask, 0, 0, SZ, SZ, hdcMem, 0, 0, SRCCOPY);
+
     SelectObject(hdcMask, hOldM);
+    SelectObject(hdcMem, hOld);
 
     ICONINFO ii = {};
     ii.fIcon = TRUE;
@@ -312,7 +315,6 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     ii.hbmMask = hMask;
     HICON hIcon = CreateIconIndirect(&ii);
 
-    SelectObject(hdcMem, hOld);
     DeleteObject(hBmp);
     DeleteObject(hMask);
     DeleteDC(hdcMem);
@@ -548,7 +550,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 toggleText = L"Switch GPU display mode";
 
             std::wstring exitText = L"Exit and switch to iGPU display mode (";
-            exitText += DgpuVendorLabel();
+            // Show iGPU name if we have it, otherwise generic label
+            if (g_haveIGpu)
+                exitText += g_iGpu.name;
+            else
+                exitText += L"iGPU";
             exitText += L")";
 
             HMENU menu = CreatePopupMenu();
@@ -558,14 +564,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             AppendMenuW(menu, MF_STRING, CMD_EXIT,   exitText.c_str());
 
             SetForegroundWindow(hwnd);
-            
+
             // Get current mouse position for modern tray behavior
             POINT pt;
             GetCursorPos(&pt);
-            
+
             int cmd = TrackPopupMenu(menu,
-                                    TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                                    pt.x, pt.y, 0, hwnd, nullptr);
+                                     TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                                     pt.x, pt.y, 0, hwnd, nullptr);
             PostMessage(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
 
@@ -574,21 +580,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (!g_wmi.ok) return 0;
 
                 GpuMode current = QueryMode();
-                if (current == GpuMode::DGPU)
+                GpuMode target =
+                    (current == GpuMode::DGPU) ? GpuMode::Hybrid : GpuMode::DGPU;
+
+                if (SetMode(target))
                 {
-                    if (SetMode(GpuMode::Hybrid))
-                    {
-                        Sleep(1500);
-                        RefreshTrayIcon(QueryMode());
-                    }
-                }
-                else if (current == GpuMode::Hybrid)
-                {
-                    if (SetMode(GpuMode::DGPU))
-                    {
-                        Sleep(1500);
-                        RefreshTrayIcon(QueryMode());
-                    }
+                    Sleep(1500);
+                    RefreshTrayIcon(QueryMode());
                 }
             }
             else if (cmd == CMD_EXIT)
@@ -647,7 +645,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
-    wc.hInstance      = hInst;
+    wc.hInstance     = hInst;
     wc.lpszClassName = L"GpuTrayClass";
     RegisterClassW(&wc);
 
@@ -675,7 +673,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     ShowWindow(g_hwnd, SW_HIDE);
 
-    // Initial sync
+    // Initial sync: prefer dGPU on launch
     GpuMode initial = QueryMode();
     if (initial != GpuMode::DGPU && g_wmi.ok)
     {
