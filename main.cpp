@@ -43,10 +43,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     wc.lpszClassName = L"TrayHookClass";
     RegisterClassW(&wc);
 
+    // NOTE: Window title added here ("GPU-Switcher")
     HWND hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         wc.lpszClassName,
-        L"",
+        L"GPU-Switcher",   // <── NVIDIA-detectable title
         WS_POPUP,
         0, 0, 0, 0,
         nullptr, nullptr, hInst, nullptr
