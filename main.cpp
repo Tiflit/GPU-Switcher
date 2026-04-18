@@ -10,13 +10,20 @@
  *   4 = dGPU        (dGPU drives display directly — best performance)
  *
  * Behaviour:
- *   Launch  -> remember current mode, then set mode 4 (dGPU)
- *   Exit    -> restore the original mode (whatever was active before launch)
- *   Right-click -> live status label, manual revert to original, Exit
+ *   Launch  -> set mode 4 (dGPU)
+ *   Exit    -> set mode 1 (Hybrid / iGPU display)
+ *   Right-click:
+ *      - Shows active GPU + model (iGPU/dGPU)
+ *      - Offers "Switch to iGPU display mode" or "Switch to dGPU display mode"
+ *        depending on current mode
+ *      - Offers "Exit and switch to iGPU display mode (Vendor dGPU)"
  *
  * Tray icon:
- *   - Letter indicates GPU type (i/iGPU, I/dGPU Intel; n/N NVIDIA; a/A AMD)
- *   - Color indicates vendor (blue Intel, green NVIDIA, red AMD)
+ *   - Letter indicates GPU type and vendor:
+ *       i / I = Intel (blue)
+ *       n / N = NVIDIA (green)
+ *       a / A = AMD (red)
+ *     Lowercase = iGPU, uppercase = dGPU
  *   - Grey '?' when unsupported / WMI unavailable
  */
 
@@ -211,21 +218,16 @@ static HRESULT WmiCallGameZone(
     return hr;
 }
 
-// ── GPU state + DXGI detection ───────────────────────────────────────────────
+// ── GPU state ────────────────────────────────────────────────────────────────
 
 enum class GpuMode { Unknown, Hybrid, DGPU };
 static GpuMode g_currentMode = GpuMode::Unknown;
 
-// Raw original mode (1/2/3/4) at startup, to restore on exit/revert.
-static DWORD g_originalModeRaw   = 0;
-static bool  g_haveOriginalMode  = false;
-
-static GpuMode QueryMode(DWORD* rawOut = nullptr)
+static GpuMode QueryMode()
 {
     DWORD val = 0;
     HRESULT hr = WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val);
     if (FAILED(hr)) return GpuMode::Unknown;
-    if (rawOut) *rawOut = val;
     return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
 }
 
@@ -236,12 +238,12 @@ static bool SetMode(GpuMode target)
     return SUCCEEDED(hr);
 }
 
-// DXGI-based GPU info for tooltips and icon selection.
+// ── DXGI GPU detection ───────────────────────────────────────────────────────
 
 struct GpuInfo
 {
     std::wstring name;
-    UINT         vendorId = 0;
+    UINT         vendorId   = 0;
     bool         isIntegrated = false;
 };
 
@@ -460,11 +462,11 @@ static HICON ModeIcon(GpuMode mode)
 static std::wstring ModeTooltip(GpuMode mode)
 {
     if (!g_wmi.ok)
-        return L"GPU mode unknown \u2014 WMI unavailable or unsupported device";
+        return L"GPU mode unknown \u2014 WMI unavailable (Lenovo-only interface)";
 
     const GpuInfo* info = ActiveGpuInfo(mode);
     if (!info)
-        return L"GPU mode unknown \u2014 no GPU information";
+        return L"GPU mode unknown \u2014 no GPU information available";
 
     std::wstring tip;
     if (mode == GpuMode::DGPU)
@@ -475,13 +477,17 @@ static std::wstring ModeTooltip(GpuMode mode)
         tip = L"GPU mode unknown \u2014 ";
 
     tip += info->name;
+    if (mode == GpuMode::DGPU)
+        tip += L" (dGPU)";
+    else if (mode == GpuMode::Hybrid)
+        tip += L" (iGPU display)";
+
     return tip;
 }
 
 // ── Tray management ──────────────────────────────────────────────────────────
 
 #define WM_TRAY          (WM_USER + 1)
-#define WM_POLL_GPU      (WM_USER + 2)   // posted by timer to refresh icon
 #define TRAY_ID          1
 #define POLL_TIMER_ID    1
 #define POLL_INTERVAL_MS 5000            // re-query GPU mode every 5 seconds
@@ -501,6 +507,10 @@ static void AddTrayIcon(GpuMode mode)
     nid.hIcon            = ModeIcon(mode);
     StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), tip.c_str());
     Shell_NotifyIconW(NIM_ADD, &nid);
+
+    // Enable modern behavior (better DPI handling, tooltips, etc.)
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
 }
 
 // Updates the tray icon only if the mode has actually changed — avoids
@@ -530,37 +540,39 @@ static void RemoveTrayIcon()
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-// Restore the original raw GPU mode (whatever was active before launch).
-static void RevertToOriginal()
-{
-    if (!g_wmi.ok) return;
-
-    if (g_haveOriginalMode)
-    {
-        WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", g_originalModeRaw, nullptr, nullptr);
-        Sleep(1500);
-        RefreshTrayIcon(QueryMode());
-    }
-    else
-    {
-        SetMode(GpuMode::Hybrid);
-        Sleep(1500);
-        RefreshTrayIcon(QueryMode());
-    }
-}
-
 // ── Window procedure ─────────────────────────────────────────────────────────
 
-#define CMD_REVERT 1
+#define CMD_TOGGLE 1
 #define CMD_EXIT   2
+
+static std::wstring DgpuVendorLabel()
+{
+    if (!g_haveDGpu)
+        return L"dGPU";
+
+    const GpuInfo& d = g_dGpu;
+    // Use vendor name only if we can infer it
+    if (d.vendorId == 0x8086) return L"Intel dGPU";
+    if (d.vendorId == 0x10DE) return L"NVIDIA dGPU";
+    if (d.vendorId == 0x1002 || d.vendorId == 0x1022) return L"AMD dGPU";
+    return L"dGPU";
+}
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    // Periodic live poll: re-query mode and update icon if it changed
     if (msg == WM_TIMER && wParam == POLL_TIMER_ID)
     {
         GpuMode live = QueryMode();
         RefreshTrayIcon(live);
+        return 0;
+    }
+
+    if (msg == WM_DPICHANGED)
+    {
+        // DPI changed (e.g. tray moved between monitors) — regenerate icons
+        DestroyIcons();
+        CreateIcons();
+        RefreshTrayIcon(g_currentMode);
         return 0;
     }
 
@@ -575,29 +587,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (!g_wmi.ok)
         {
-            label = L"Active: Unknown (WMI unavailable)";
+            label = L"Active GPU: Unknown (WMI unavailable)";
         }
         else if (!info)
         {
-            label = L"Active: Unknown (no GPU info)";
+            label = L"Active GPU: Unknown (no GPU info)";
         }
         else
         {
-            if (mode == GpuMode::DGPU)
-                label = L"Active: dGPU \u2014 ";
-            else if (mode == GpuMode::Hybrid)
-                label = L"Active: Hybrid \u2014 ";
-            else
-                label = L"Active: Unknown \u2014 ";
-
+            label = L"Active GPU: ";
             label += info->name;
+            if (mode == GpuMode::DGPU)
+                label += L" (dGPU)";
+            else if (mode == GpuMode::Hybrid)
+                label += L" (iGPU display)";
         }
+
+        std::wstring toggleText;
+        if (mode == GpuMode::DGPU)
+            toggleText = L"Switch to iGPU display mode";
+        else if (mode == GpuMode::Hybrid)
+            toggleText = L"Switch to dGPU display mode";
+        else
+            toggleText = L"Switch GPU display mode";
+
+        std::wstring exitText = L"Exit and switch to iGPU display mode (";
+        exitText += DgpuVendorLabel();
+        exitText += L")";
 
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, CMD_REVERT, L"Revert to previous mode");
-        AppendMenuW(menu, MF_STRING, CMD_EXIT,   L"Exit (restore previous mode)");
+        AppendMenuW(menu, MF_STRING, CMD_TOGGLE, toggleText.c_str());
+        AppendMenuW(menu, MF_STRING, CMD_EXIT,   exitText.c_str());
 
         SetForegroundWindow(hwnd);
         POINT pt;
@@ -607,14 +629,41 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         PostMessage(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
 
-        if (cmd == CMD_REVERT)
+        if (cmd == CMD_TOGGLE)
         {
-            RevertToOriginal();
+            if (!g_wmi.ok)
+                return 0;
+
+            GpuMode current = QueryMode();
+            if (current == GpuMode::DGPU)
+            {
+                if (SetMode(GpuMode::Hybrid))
+                {
+                    Sleep(1500);
+                    RefreshTrayIcon(QueryMode());
+                }
+            }
+            else if (current == GpuMode::Hybrid)
+            {
+                if (SetMode(GpuMode::DGPU))
+                {
+                    Sleep(1500);
+                    RefreshTrayIcon(QueryMode());
+                }
+            }
         }
         else if (cmd == CMD_EXIT)
         {
+            if (g_wmi.ok)
+            {
+                // Ensure we leave the system in iGPU display mode
+                SetMode(GpuMode::Hybrid);
+                Sleep(1500);
+            }
             PostQuitMessage(0);
         }
+
+        return 0;
     }
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -655,21 +704,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     {
         AddTrayIcon(GpuMode::Unknown);
         MessageBoxW(nullptr,
-            L"WMI initialisation failed.\n\n"
-            L"This tool requires the LENOVO_GAMEZONE_DATA WMI class\n"
-            L"present on Lenovo Legion / IdeaPad Gaming laptops.\n"
-            L"GPU switching is unavailable.",
+            L"GPU switching is not available on this device.\n\n"
+            L"This tool requires the Lenovo-specific WMI class:\n"
+            L"  LENOVO_GAMEZONE_DATA\n\n"
+            L"Your system does not expose this interface.\n"
+            L"The tray icon will show status only.",
             L"GPU Tray Switcher \u2014 WMI Error",
             MB_OK | MB_ICONWARNING);
     }
     else
     {
-        // Remember original raw mode before forcing dGPU
-        DWORD raw = 0;
-        g_currentMode      = QueryMode(&raw);
-        g_originalModeRaw  = raw;
-        g_haveOriginalMode = true;
-
         bool switched = SetMode(GpuMode::DGPU);
         // Wait for the EC to apply the MUX change before first query
         Sleep(1500);
@@ -679,9 +723,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         if (!switched)
         {
             MessageBoxW(nullptr,
-                L"SetGpuGpsState returned an error.\n\n"
-                L"Make sure you are running as Administrator and that\n"
-                L"Lenovo Vantage / Legion Zone services are not conflicting.",
+                L"The GPU mode could not be changed.\n\n"
+                L"Possible causes:\n"
+                L"\u2022 Administrator privileges are required\n"
+                L"\u2022 Lenovo Vantage / Legion Zone is blocking access\n"
+                L"\u2022 The EC is busy or switching modes\n\n"
+                L"Your GPU mode may not have been changed.",
                 L"GPU Tray Switcher \u2014 Switch Error",
                 MB_OK | MB_ICONWARNING);
         }
@@ -698,10 +745,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         DispatchMessage(&msg);
     }
 
-    // Cleanup: restore original mode and exit immediately (no animation)
+    // Cleanup: ensure iGPU display mode on exit, then clean up
     KillTimer(g_hwnd, POLL_TIMER_ID);
     if (wmiOk)
-        RevertToOriginal();
+    {
+        SetMode(GpuMode::Hybrid);
+        Sleep(1500);
+    }
     RemoveTrayIcon();
     WmiShutdown();
     DestroyIcons();
