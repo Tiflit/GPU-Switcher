@@ -1,19 +1,16 @@
 /*
  * gpu_tray — Lenovo Legion dGPU Tray Switcher
- * Targets: Intel iGPU + NVIDIA dGPU Lenovo Legion laptops
- * Uses:    LENOVO_GAMEZONE_DATA WMI class (method 5/6: Get/SetGpuGpsState)
- *          This is the same interface used by LenovoLegionToolkit.
+ * Targets: Intel iGPU + NVIDIA dGPU on Lenovo Legion / IdeaPad Gaming laptops
+ * Uses:    LENOVO_GAMEZONE_DATA WMI (methods 5/6: Get/SetGpuGpsState)
  *
- * GPU Working Mode values (SetGpuGpsState / GetGpuGpsState):
- *   1 = Hybrid      (iGPU display, dGPU renders when needed)
- *   2 = HybridIGPU  (dGPU fully disconnected, best battery)
- *   3 = HybridAuto  (auto-switch on AC/battery)
- *   4 = dGPU        (display connected directly to dGPU, best perf)
+ * GPU Working Mode values:
+ *   1 = Hybrid      (iGPU display, dGPU on-demand — best battery)
+ *   4 = dGPU        (dGPU drives display directly — best performance)
  *
  * Behaviour:
- *   Launch  -> set mode 4 (dGPU), tray icon = green "N"
- *   Exit    -> set mode 1 (Hybrid), tray icon = blue "I" briefly
- *   Right-click -> status label, manual revert, Exit
+ *   Launch  -> set mode 4 (dGPU); icon always reflects live state
+ *   Exit    -> set mode 1 (Hybrid); exits immediately, no animation
+ *   Right-click -> live status label, manual revert, Exit
  */
 
 #include <Windows.h>
@@ -34,11 +31,8 @@
 #define METHOD_GET_GPU_GPS      L"GetGpuGpsState"   // WmiMethodId 5
 #define METHOD_SET_GPU_GPS      L"SetGpuGpsState"   // WmiMethodId 6
 
-// GPU working mode constants
-#define GPU_MODE_HYBRID       1u   // Optimus: iGPU display, dGPU on-demand
-#define GPU_MODE_HYBRID_IGPU  2u   // dGPU fully disconnected
-#define GPU_MODE_HYBRID_AUTO  3u   // auto on AC/battery
-#define GPU_MODE_DGPU         4u   // dGPU drives display directly
+#define GPU_MODE_HYBRID  1u   // Optimus: iGPU display, dGPU on-demand
+#define GPU_MODE_DGPU    4u   // dGPU drives display directly
 
 struct WmiCtx {
     IWbemLocator*  pLocator  = nullptr;
@@ -57,7 +51,6 @@ static bool WmiInit()
                               RPC_C_AUTHN_LEVEL_DEFAULT,
                               RPC_C_IMP_LEVEL_IMPERSONATE,
                               nullptr, EOAC_NONE, nullptr);
-    // RPC_E_TOO_LATE is fine — security already initialized
     if (FAILED(hr) && hr != RPC_E_TOO_LATE) { CoUninitialize(); return false; }
 
     hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
@@ -93,8 +86,8 @@ static void WmiShutdown()
 }
 
 // Execute a LENOVO_GAMEZONE_DATA WMI method.
-// inParamName / inValue: optional input parameter (pass nullptr to skip).
-// outParamName / outValue: optional output parameter to read back.
+// Pass inParamName=nullptr to call with no input params (Get methods).
+// Pass outParamName=nullptr to ignore output (Set methods).
 static HRESULT WmiCallGameZone(
     const wchar_t* method,
     const wchar_t* inParamName,  DWORD  inValue,
@@ -102,17 +95,16 @@ static HRESULT WmiCallGameZone(
 {
     if (!g_wmi.ok) return E_NOT_VALID_STATE;
 
-    // Get class object for in-param definition
-    IWbemClassObject* pClass    = nullptr;
-    IWbemClassObject* pInClass  = nullptr;
-    IWbemClassObject* pInInst   = nullptr;
-    IWbemClassObject* pOutInst  = nullptr;
+    IWbemClassObject* pClass   = nullptr;
+    IWbemClassObject* pInClass = nullptr;
+    IWbemClassObject* pInInst  = nullptr;
+    IWbemClassObject* pOutInst = nullptr;
 
     HRESULT hr = g_wmi.pServices->GetObject(
         _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pClass, nullptr);
     if (FAILED(hr)) return hr;
 
-    // Find the first instance path  (InstanceName)
+    // Find first instance path
     IEnumWbemClassObject* pEnum = nullptr;
     hr = g_wmi.pServices->CreateInstanceEnum(
         _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pEnum);
@@ -133,19 +125,17 @@ static HRESULT WmiCallGameZone(
     // Build input parameters if needed
     if (inParamName)
     {
-        IWbemClassObject* pMethodDef = nullptr;
         hr = pClass->GetMethod(method, 0, &pInClass, nullptr);
         if (SUCCEEDED(hr) && pInClass)
         {
             pInClass->SpawnInstance(0, &pInInst);
             VARIANT vIn;
-            vIn.vt     = VT_I4;
-            vIn.lVal   = (LONG)inValue;
+            vIn.vt   = VT_I4;
+            vIn.lVal = (LONG)inValue;
             pInInst->Put(inParamName, 0, &vIn, 0);
         }
     }
 
-    // Execute
     hr = g_wmi.pServices->ExecMethod(
         V_BSTR(&vPath), _bstr_t(method), 0, nullptr,
         pInInst, &pOutInst, nullptr);
@@ -190,8 +180,8 @@ static bool SetMode(GpuMode target)
 }
 
 // ── Tray icon rendering ──────────────────────────────────────────────────────
-// 16×16 DIB: filled circle + centred bold letter.
-// Softer muted colours; letter drawn at 13 px for better visibility.
+// 16×16 DIB: filled circle + centred 13 px bold letter.
+// Soft muted palette: steel blue for iGPU, sage green for dGPU, grey for unknown.
 
 static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
 {
@@ -211,15 +201,13 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
     BITMAPINFO bi = {};
     bi.bmiHeader  = bih;
 
-    void* bits    = nullptr;
-    HBITMAP hBmp  = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HBITMAP hOld  = (HBITMAP)SelectObject(hdcMem, hBmp);
+    void*   bits = nullptr;
+    HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
 
-    // Background: pure black → becomes transparent via mask
     RECT rc = { 0, 0, SZ, SZ };
     FillRect(hdcMem, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
-    // Filled circle (slightly inset for a 1-px margin)
     HBRUSH hBrush = CreateSolidBrush(bg);
     HPEN   hPen   = CreatePen(PS_SOLID, 1, bg);
     HPEN   hOldP  = (HPEN)SelectObject(hdcMem, hPen);
@@ -230,7 +218,6 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
     DeleteObject(hBrush);
     DeleteObject(hPen);
 
-    // Letter: 13 px bold, centred — larger and more visible than before
     HFONT hFont = CreateFontW(
         13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -245,7 +232,6 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
     SelectObject(hdcMem, hOldF);
     DeleteObject(hFont);
 
-    // Mask: black pixels in colour bitmap → transparent
     HDC     hdcMask = CreateCompatibleDC(hdcScreen);
     HBITMAP hMask   = CreateBitmap(SZ, SZ, 1, 1, nullptr);
     HBITMAP hOldM   = (HBITMAP)SelectObject(hdcMask, hMask);
@@ -268,13 +254,9 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
     return hIcon;
 }
 
-// Softer, muted palette — less saturated than before
-// iGPU : steel blue    (#5B8DB8 → RGB(91,141,184))
-// dGPU : muted green   (#5AA06A → RGB(90,160,106))
-// unk  : medium grey   (#888888 → RGB(136,136,136))
-static HICON g_hIconHybrid  = nullptr;
-static HICON g_hIconDGPU    = nullptr;
-static HICON g_hIconUnknown = nullptr;
+static HICON g_hIconHybrid  = nullptr;   // blue  "I"
+static HICON g_hIconDGPU    = nullptr;   // green "N"
+static HICON g_hIconUnknown = nullptr;   // grey  "?"
 
 static void CreateIcons()
 {
@@ -292,8 +274,11 @@ static void DestroyIcons()
 
 // ── Tray management ──────────────────────────────────────────────────────────
 
-#define WM_TRAY  (WM_USER + 1)
-#define TRAY_ID  1
+#define WM_TRAY       (WM_USER + 1)
+#define WM_POLL_GPU   (WM_USER + 2)   // posted by timer to refresh icon
+#define TRAY_ID       1
+#define POLL_TIMER_ID 1
+#define POLL_INTERVAL_MS 3000         // re-query GPU mode every 3 seconds
 
 static HWND      g_hwnd  = nullptr;
 static HINSTANCE g_hInst = nullptr;
@@ -309,7 +294,7 @@ static std::wstring ModeTooltip(GpuMode m)
 {
     if (m == GpuMode::DGPU)   return L"dGPU active \u2014 NVIDIA RTX (Discrete mode)";
     if (m == GpuMode::Hybrid) return L"Hybrid active \u2014 Intel iGPU (Optimus mode)";
-    return L"GPU mode unknown \u2014 WMI call failed";
+    return L"GPU mode unknown \u2014 WMI unavailable";
 }
 
 static void AddTrayIcon(GpuMode m)
@@ -326,15 +311,20 @@ static void AddTrayIcon(GpuMode m)
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
-static void UpdateTrayIcon(GpuMode m)
+// Updates the tray icon only if the mode has actually changed — avoids
+// unnecessary flicker from constant NIM_MODIFY calls.
+static void RefreshTrayIcon(GpuMode newMode)
 {
-    std::wstring tip = ModeTooltip(m);
+    if (newMode == g_currentMode) return;
+    g_currentMode = newMode;
+
+    std::wstring tip = ModeTooltip(newMode);
     NOTIFYICONDATA nid = {};
     nid.cbSize         = sizeof(nid);
     nid.hWnd           = g_hwnd;
     nid.uID            = TRAY_ID;
     nid.uFlags         = NIF_ICON | NIF_TIP;
-    nid.hIcon          = ModeIcon(m);
+    nid.hIcon          = ModeIcon(newMode);
     StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), tip.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -355,9 +345,20 @@ static void RemoveTrayIcon()
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Periodic live poll: re-query mode and update icon if it changed
+    if (msg == WM_TIMER && wParam == POLL_TIMER_ID)
+    {
+        GpuMode live = QueryMode();
+        RefreshTrayIcon(live);
+        return 0;
+    }
+
     if (msg == WM_TRAY && lParam == WM_RBUTTONUP)
     {
+        // Always show the real current state in the menu label
         GpuMode mode = QueryMode();
+        RefreshTrayIcon(mode);
+
         std::wstring label =
             (mode == GpuMode::DGPU)   ? L"Active: dGPU (NVIDIA Discrete)" :
             (mode == GpuMode::Hybrid) ? L"Active: Hybrid (Intel iGPU)"    :
@@ -366,8 +367,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, CMD_REVERT, L"Revert to Hybrid (iGPU) now");
-        AppendMenuW(menu, MF_STRING, CMD_EXIT,   L"Exit (auto-revert to Hybrid)");
+        AppendMenuW(menu, MF_STRING, CMD_REVERT, L"Revert to Hybrid (iGPU)");
+        AppendMenuW(menu, MF_STRING, CMD_EXIT,   L"Exit (revert to Hybrid)");
 
         SetForegroundWindow(hwnd);
         POINT pt;
@@ -380,14 +381,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (cmd == CMD_REVERT)
         {
             SetMode(GpuMode::Hybrid);
-            g_currentMode = QueryMode();
-            UpdateTrayIcon(g_currentMode);
+            Sleep(1500);
+            RefreshTrayIcon(QueryMode());
         }
         else if (cmd == CMD_EXIT)
         {
             PostQuitMessage(0);
         }
     }
+
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -407,7 +409,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 1;
     }
 
-    // Message-only window (never appears in taskbar)
+    // Message-only window
     WNDCLASSW wc     = {};
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
@@ -419,25 +421,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     CreateIcons();
 
-    // Initialise WMI
     bool wmiOk = WmiInit();
     if (!wmiOk)
     {
         AddTrayIcon(GpuMode::Unknown);
         MessageBoxW(nullptr,
             L"WMI initialisation failed.\n\n"
-            L"This tool requires the LENOVO_GAMEZONE_DATA WMI class present on\n"
-            L"Lenovo Legion laptops. GPU switching is unavailable.",
+            L"This tool requires the LENOVO_GAMEZONE_DATA WMI class\n"
+            L"present on Lenovo Legion / IdeaPad Gaming laptops.\n"
+            L"GPU switching is unavailable.",
             L"GPU Tray Switcher \u2014 WMI Error",
             MB_OK | MB_ICONWARNING);
     }
     else
     {
-        // Switch to dGPU mode
         bool switched = SetMode(GpuMode::DGPU);
-
-        // Give the EC/driver up to 1.5 s to apply (WMI call returns before
-        // the embedded controller has finished the MUX operation)
+        // Wait for the EC to apply the MUX change before first query
         Sleep(1500);
         g_currentMode = QueryMode();
         AddTrayIcon(g_currentMode);
@@ -445,19 +444,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         if (!switched)
         {
             MessageBoxW(nullptr,
-                L"The WMI call to SetGpuGpsState returned an error.\n\n"
-                L"Ensure you are running as Administrator and that\n"
+                L"SetGpuGpsState returned an error.\n\n"
+                L"Make sure you are running as Administrator and that\n"
                 L"Lenovo Vantage / Legion Zone services are not conflicting.",
                 L"GPU Tray Switcher \u2014 Switch Error",
                 MB_OK | MB_ICONWARNING);
         }
-        else if (g_currentMode != GpuMode::DGPU)
-        {
-            // Switch was requested successfully but mode hasn't confirmed yet.
-            // This is normal on some firmware — the icon will update if you
-            // reopen the tray menu (it re-queries each time).
-            // No modal dialog here to avoid interrupting workflow.
-        }
+
+        // Start live-poll timer: refreshes icon every 3 s without any overhead
+        SetTimer(g_hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, nullptr);
     }
 
     // Message loop
@@ -468,14 +463,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         DispatchMessage(&msg);
     }
 
-    // Cleanup: revert to Hybrid, brief visual confirmation, then exit
-    if (wmiOk)
-    {
-        SetMode(GpuMode::Hybrid);
-        UpdateTrayIcon(GpuMode::Hybrid);
-        Sleep(600);
-    }
-
+    // Cleanup: revert to Hybrid and exit immediately (no animation)
+    KillTimer(g_hwnd, POLL_TIMER_ID);
+    if (wmiOk) SetMode(GpuMode::Hybrid);
     RemoveTrayIcon();
     WmiShutdown();
     DestroyIcons();
