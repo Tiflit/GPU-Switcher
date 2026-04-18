@@ -4,7 +4,7 @@
  * - Checks for Administrator privileges at startup
  * - Correct GPU detection (Intel = iGPU, NVIDIA/AMD = dGPU)
  * - Correct exit menu text
- * - Switching logic fixed
+ * - Lightweight logging via OutputDebugStringW
  */
 
 #include <Windows.h>
@@ -23,6 +23,17 @@ using Microsoft::WRL::ComPtr;
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "comsuppw.lib") // for _bstr_t
+
+// ============================================================================
+//  Lightweight logging
+// ============================================================================
+
+static void Log(const wchar_t* msg)
+{
+    OutputDebugStringW(L"[gpu_tray] ");
+    OutputDebugStringW(msg);
+    OutputDebugStringW(L"\n");
+}
 
 // ============================================================================
 //  Admin privilege check
@@ -69,8 +80,14 @@ static WmiCtx g_wmi;
 
 static bool WmiInit()
 {
+    Log(L"WmiInit: starting");
+
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return false;
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)
+    {
+        Log(L"WmiInit: CoInitializeEx failed");
+        return false;
+    }
 
     hr = CoInitializeSecurity(
         nullptr, -1, nullptr, nullptr,
@@ -78,33 +95,50 @@ static bool WmiInit()
         RPC_C_IMP_LEVEL_IMPERSONATE,
         nullptr, EOAC_NONE, nullptr);
     if (FAILED(hr) && hr != RPC_E_TOO_LATE)
+    {
+        Log(L"WmiInit: CoInitializeSecurity failed");
         return false;
+    }
 
     hr = CoCreateInstance(
         CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(&g_wmi.pLocator));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr))
+    {
+        Log(L"WmiInit: CoCreateInstance(IWbemLocator) failed");
+        return false;
+    }
 
     hr = g_wmi.pLocator->ConnectServer(
         _bstr_t(GAMEZONE_WMI_NAMESPACE),
         nullptr, nullptr, nullptr,
         0, nullptr, nullptr,
         &g_wmi.pServices);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr))
+    {
+        Log(L"WmiInit: ConnectServer failed");
+        return false;
+    }
 
     hr = CoSetProxyBlanket(
         g_wmi.pServices.Get(),
         RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
         RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
         nullptr, EOAC_NONE);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr))
+    {
+        Log(L"WmiInit: CoSetProxyBlanket failed");
+        return false;
+    }
 
     g_wmi.ok = true;
+    Log(L"WmiInit: success");
     return true;
 }
 
 static void WmiShutdown()
 {
+    Log(L"WmiShutdown");
     g_wmi = {};
     CoUninitialize();
 }
@@ -181,9 +215,14 @@ static bool g_haveIGpu = false, g_haveDGpu = false;
 
 static void DetectGpus()
 {
+    Log(L"DetectGpus: starting");
+
     ComPtr<IDXGIFactory1> pFactory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&pFactory))))
+    {
+        Log(L"DetectGpus: CreateDXGIFactory1 failed");
         return;
+    }
 
     for (UINT i = 0;; ++i)
     {
@@ -199,9 +238,7 @@ static void DetectGpus()
         info.vendorId = desc.VendorId;
         info.name = desc.Description;
 
-        // Correct detection:
-        // Intel = iGPU
-        // NVIDIA/AMD = dGPU
+        // Intel = iGPU, NVIDIA/AMD = dGPU
         bool integrated = (desc.VendorId == 0x8086);
         info.isIntegrated = integrated;
 
@@ -217,26 +254,43 @@ static void DetectGpus()
         }
     }
 
-    // If BIOS hides iGPU, fallback to Intel-less systems:
     if (!g_haveIGpu && g_haveDGpu)
     {
-        g_iGpu = g_dGpu; // fallback
+        // Fallback for systems where iGPU is hidden
+        g_iGpu = g_dGpu;
         g_haveIGpu = true;
+        Log(L"DetectGpus: iGPU hidden, using dGPU as fallback");
     }
+
+    Log(L"DetectGpus: done");
 }
 
 static GpuMode QueryMode()
 {
     DWORD val = 0;
-    if (FAILED(WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val)))
+    HRESULT hr = WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val);
+    if (FAILED(hr))
+    {
+        Log(L"QueryMode: WmiCallGameZone failed");
         return GpuMode::Unknown;
+    }
     return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
 }
 
 static bool SetMode(GpuMode target)
 {
     DWORD val = (target == GpuMode::DGPU) ? GPU_MODE_DGPU : GPU_MODE_HYBRID;
-    return SUCCEEDED(WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr));
+    HRESULT hr = WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr);
+    if (FAILED(hr))
+    {
+        Log(L"SetMode: WmiCallGameZone failed");
+        return false;
+    }
+    if (target == GpuMode::DGPU)
+        Log(L"SetMode: requested DGPU");
+    else
+        Log(L"SetMode: requested HYBRID");
+    return true;
 }
 
 static const GpuInfo* ActiveGpuInfo(GpuMode mode)
@@ -402,8 +456,10 @@ static std::wstring ModeTooltip(GpuMode mode)
 #define POLL_TIMER_ID    1
 #define POLL_INTERVAL_MS 5000
 
-#define CMD_TOGGLE  1001
-#define CMD_EXIT    1002
+enum class MenuCmd : UINT {
+    Toggle = 1001,
+    Exit   = 1002
+};
 
 static HWND g_hwnd = nullptr;
 
@@ -485,16 +541,6 @@ static void RemoveTrayIcon()
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-static std::wstring DgpuVendorLabel()
-{
-    if (!g_haveDGpu) return L"dGPU";
-    const GpuInfo& d = g_dGpu;
-    if (d.vendorId == 0x8086) return L"Intel dGPU";
-    if (d.vendorId == 0x10DE) return L"NVIDIA dGPU";
-    if (d.vendorId == 0x1002 || d.vendorId == 0x1022) return L"AMD dGPU";
-    return L"dGPU";
-}
-
 // ============================================================================
 //  Window procedure
 // ============================================================================
@@ -550,7 +596,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 toggleText = L"Switch GPU display mode";
 
             std::wstring exitText = L"Exit and switch to iGPU display mode (";
-            // Show iGPU name if we have it, otherwise generic label
             if (g_haveIGpu)
                 exitText += g_iGpu.name;
             else
@@ -560,8 +605,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(menu, MF_STRING, CMD_TOGGLE, toggleText.c_str());
-            AppendMenuW(menu, MF_STRING, CMD_EXIT,   exitText.c_str());
+            AppendMenuW(menu, MF_STRING, (UINT)MenuCmd::Toggle, toggleText.c_str());
+            AppendMenuW(menu, MF_STRING, (UINT)MenuCmd::Exit,   exitText.c_str());
 
             SetForegroundWindow(hwnd);
 
@@ -575,7 +620,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             PostMessage(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
 
-            if (cmd == CMD_TOGGLE)
+            if (cmd == (int)MenuCmd::Toggle)
             {
                 if (!g_wmi.ok) return 0;
 
@@ -589,7 +634,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     RefreshTrayIcon(QueryMode());
                 }
             }
-            else if (cmd == CMD_EXIT)
+            else if (cmd == (int)MenuCmd::Exit)
             {
                 if (g_wmi.ok)
                 {
