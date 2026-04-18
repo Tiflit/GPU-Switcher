@@ -33,6 +33,7 @@ jobs:
         uses: actions/upload-artifact@v4.6.2
         with:
           name: GPU-Switcher-x64
-          path: build/GPU-Switcher.exe
-                build/dummy_tray.exe
+          path: |
+            build/GPU-Switcher.exe
+            build/dummy_tray.exe
           retention-days: 30
