@@ -1,18 +1,11 @@
-# gpu_tray — Lenovo Legion dGPU Tray Switcher
+# Lenovo Legion dGPU Switcher
 
-A minimal Windows tray application for Lenovo Legion laptops with Intel iGPU + NVIDIA dGPU.  
+A minimal Windows tray application for Lenovo Legion laptops with NVIDIA dGPU.  
 **No installation required. Build entirely online via GitHub Actions.**
 
 ---
 
 ## What it does
-
-| Event | Behaviour |
-|-------|-----------|
-| **Launch** | Switches to dGPU (Discrete) mode → green **N** icon in tray |
-| **Hover tray icon** | Tooltip shows current active GPU mode |
-| **Right-click → Revert** | Switches back to Hybrid (iGPU) mid-session |
-| **Exit** | Automatically reverts to Hybrid, icon briefly shows blue **I** |
 
 Tray icon key:
 
@@ -60,40 +53,6 @@ GPU mode values:
 | **4** | **dGPU** | **dGPU drives display directly (best performance)** |
 
 This tool switches between **mode 4** (on launch) and **mode 1** (on exit/revert).
-
----
-
-## Building (online — no local install needed)
-
-1. **Fork or push** this repository to your GitHub account.
-2. Go to **Actions** tab → select **Build gpu_tray** → click **Run workflow**.
-3. After ~1 minute, click the completed run → download **`gpu_tray-x64`** artifact.
-4. Extract `gpu_tray.exe` and run it as Administrator.
-
----
-
-## Building locally (optional)
-
-```powershell
-# Requires Visual Studio 2019+ with "Desktop development with C++" workload
-cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
----
-
-## Project structure
-
-```
-gpu_tray/
-├── main.cpp              # Application logic, WMI switching, tray icon
-├── nvapi_interface.h     # Legacy stub (no longer used, kept for reference)
-├── gpu_tray.manifest     # DPI awareness + requireAdministrator
-├── CMakeLists.txt        # Build definition
-└── .github/
-    └── workflows/
-        └── build.yml     # GitHub Actions CI — builds and uploads .exe
-```
 
 ---
 
