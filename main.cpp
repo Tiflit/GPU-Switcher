@@ -1,7 +1,7 @@
 /*
- * gpu_tray — Lenovo Legion dGPU Display Switcher
- * - Automatic attempt to switch to dGPU on launch (via Lenovo WMI)
- * - Creates/updates NVIDIA profile for gpu-switcher.exe (prefer dGPU)
+ * GPU-Switcher — Lenovo Legion dGPU Display Switcher
+ * - Attempts to switch display to dGPU on launch (via Lenovo WMI)
+ * - Creates/updates NVIDIA profile for GPU-Switcher.exe (prefer dGPU)
  * - Log file overwritten on each launch (gpu_tray.log)
  * - Correct GPU detection (Intel = iGPU, NVIDIA/AMD = dGPU)
  * - Uses ComPtr for COM (no leaks)
@@ -17,7 +17,6 @@
 #include <string>
 #include <fstream>
 #include <strsafe.h>
-#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -37,7 +36,7 @@ static void Log(const std::wstring& msg)
 {
     if (g_log.is_open())
         g_log << msg << L"\n";
-    OutputDebugStringW((L"[gpu_tray] " + msg + L"\n").c_str());
+    OutputDebugStringW((L"[GPU-Switcher] " + msg + L"\n").c_str());
 }
 
 // ============================================================================
@@ -64,7 +63,7 @@ static bool IsAdmin()
 }
 
 // ============================================================================
-//  NVAPI DRS: create/update profile for gpu-switcher.exe
+//  NVAPI DRS: create/update profile for GPU-Switcher.exe
 //  - No nvapi.h / nvapi.lib required (dynamic load)
 //  - Enables dGPU preference / automatic display switching for this EXE
 // ============================================================================
@@ -93,7 +92,7 @@ typedef NvAPI_Status (__cdecl* NvAPI_DRS_CreateApplication_t)(NvDRSSessionHandle
 static const unsigned int ID_NvAPI_Initialize             = 0x0150E828;
 static const unsigned int ID_NvAPI_Unload                 = 0xD22BDD7E;
 static const unsigned int ID_NvAPI_GetErrorMessage        = 0x6C2D048C;
-static const unsigned int ID_NvAPI_DRS_CreateSession      = 0x694D52E;
+static const unsigned int ID_NvAPI_DRS_CreateSession      = 0x0694D52E;
 static const unsigned int ID_NvAPI_DRS_DestroySession     = 0xDAD9CFF8;
 static const unsigned int ID_NvAPI_DRS_LoadSettings       = 0x375DBD6B;
 static const unsigned int ID_NvAPI_DRS_SaveSettings       = 0xFCBC7E14;
@@ -226,7 +225,7 @@ static void EnsureNvidiaProfileForGpuSwitcher()
         return;
     }
 
-    const wchar_t* profileName = L"GPU Switcher Profile";
+    const wchar_t* profileName = L"GPU-Switcher Profile";
 
     NvDRSProfileHandle hProfile = nullptr;
     st = NvAPI_DRS_FindProfileByName(hSession, profileName, &hProfile);
@@ -260,8 +259,8 @@ static void EnsureNvidiaProfileForGpuSwitcher()
     {
         NVDRS_APPLICATION app = {};
         app.version = NVDRS_APPLICATION_VER;
-        StringCchCopyW(app.appName, ARRAYSIZE(app.appName), L"gpu-switcher.exe");
-        StringCchCopyW(app.userFriendlyName, ARRAYSIZE(app.userFriendlyName), L"GPU Switcher");
+        StringCchCopyW(app.appName, ARRAYSIZE(app.appName), L"GPU-Switcher.exe");
+        StringCchCopyW(app.userFriendlyName, ARRAYSIZE(app.userFriendlyName), L"GPU-Switcher");
         app.launcher[0] = L'\0';
 
         st = NvAPI_DRS_CreateApplication(hSession, hProfile, &app);
@@ -299,7 +298,7 @@ static void EnsureNvidiaProfileForGpuSwitcher()
     if (st != NVAPI_OK)
         NvLogError(NvAPI_GetErrorMessage, st, L"DRS_SaveSettings");
     else
-        Log(L"NVAPI: profile for gpu-switcher.exe updated (dGPU preferred)");
+        Log(L"NVAPI: profile for GPU-Switcher.exe updated (dGPU preferred)");
 
     NvAPI_DRS_DestroySession(hSession);
     NvAPI_Unload();
@@ -905,14 +904,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     g_log.open(L"gpu_tray.log", std::ios::out | std::ios::trunc);
     if (g_log.is_open())
-        g_log << L"gpu_tray started\n";
+        g_log << L"GPU-Switcher started\n";
 
     if (!IsAdmin())
     {
         MessageBoxW(nullptr,
                     L"This tool must be run as Administrator.\n\n"
                     L"Right-click the .exe and choose \"Run as administrator\".",
-                    L"GPU Tray Switcher",
+                    L"GPU-Switcher",
                     MB_ICONERROR | MB_OK);
         return 1;
     }
@@ -921,7 +920,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     if (GetLastError() == ERROR_ALREADY_EXISTS)
         return 0;
 
-    // Create/refresh NVIDIA profile for gpu-switcher.exe (prefer dGPU)
+    // Create/refresh NVIDIA profile for GPU-Switcher.exe (prefer dGPU)
     EnsureNvidiaProfileForGpuSwitcher();
 
     if (!WmiInit())
@@ -929,7 +928,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         MessageBoxW(nullptr,
                     L"Lenovo WMI interface (LENOVO_GAMEZONE_DATA) not found.\n"
                     L"This tool only works on supported Lenovo systems.",
-                    L"GPU Tray Switcher",
+                    L"GPU-Switcher",
                     MB_ICONERROR | MB_OK);
         if (hMutex)
         {
@@ -945,7 +944,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
-    wc.lpszClassName = L"GpuTrayClass";
+    wc.lpszClassName = L"GpuSwitcherClass";
     RegisterClassW(&wc);
 
     g_hwnd = CreateWindowExW(
@@ -1050,7 +1049,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     if (g_log.is_open())
     {
-        g_log << L"gpu_tray exiting\n";
+        g_log << L"GPU-Switcher exiting\n";
         g_log.close();
     }
 
