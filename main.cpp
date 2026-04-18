@@ -1,153 +1,238 @@
 /*
- * gpu_tray — Advanced Optimus dGPU tray switcher
- * Targets: Intel iGPU + NVIDIA dGPU laptops with Advanced Optimus (MUX switch)
- * Build:   See .github/workflows/build.yml  (MSVC + NVAPI NuGet, no local install)
+ * gpu_tray — Lenovo Legion dGPU Tray Switcher
+ * Targets: Intel iGPU + NVIDIA dGPU Lenovo Legion laptops
+ * Uses:    LENOVO_GAMEZONE_DATA WMI class (method 5/6: Get/SetGpuGpsState)
+ *          This is the same interface used by LenovoLegionToolkit.
+ *
+ * GPU Working Mode values (SetGpuGpsState / GetGpuGpsState):
+ *   1 = Hybrid      (iGPU display, dGPU renders when needed)
+ *   2 = HybridIGPU  (dGPU fully disconnected, best battery)
+ *   3 = HybridAuto  (auto-switch on AC/battery)
+ *   4 = dGPU        (display connected directly to dGPU, best perf)
  *
  * Behaviour:
- *   Launch  → request dGPU MUX via NVAPI, tray icon = green "N" + GPU name tooltip
- *   Exit    → revert MUX to iGPU/auto,    tray icon = blue  "I" briefly, then gone
- *   Right-click menu → current GPU label, manual revert, Exit
+ *   Launch  -> set mode 4 (dGPU), tray icon = green "N"
+ *   Exit    -> set mode 1 (Hybrid), tray icon = blue "I" briefly
+ *   Right-click -> status label, manual revert, Exit
  */
 
 #include <Windows.h>
 #include <shellapi.h>
+#include <wbemidl.h>
+#include <comdef.h>
 #include <string>
 #include <strsafe.h>
-#include <cstring>
 
-// ── NVAPI dynamic loading ────────────────────────────────────────────────────
-// We never link nvapi64.lib directly; we load the DLL at runtime so the app
-// still launches (and falls back gracefully) on systems without NVIDIA drivers.
-// Note: WIN32_LEAN_AND_MEAN, UNICODE, _UNICODE are injected by CMake — do not
-//       redefine them here or MSVC /WX will treat the redefinition as an error.
-#include "nvapi_interface.h"   // minimal typedefs — no NVAPI SDK install needed
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
-typedef void* (*NvAPI_QueryInterface_t)(unsigned int);
-typedef int   (*NvAPI_Initialize_t)();
-typedef int   (*NvAPI_Unload_t)();
-typedef int   (*NvAPI_GetDisplayDriverVersion_t)(void*, void*);
+// ── WMI / LENOVO_GAMEZONE_DATA ───────────────────────────────────────────────
 
-// MUX switch function IDs (Advanced Optimus, driver 510+)
-// NvAPI_Disp_SetPreferredDGPU — requests that the MUX switch to dGPU output
-#define NVAPI_ID_DISP_SET_PREFERRED_DGPU    0x5F4C2664u
-// NvAPI_Disp_GetCurrentDGPUMode — queries active MUX state
-#define NVAPI_ID_DISP_GET_CURRENT_DGPU_MODE 0x0DBAC0B0u
+#define GAMEZONE_WMI_NAMESPACE  L"ROOT\\WMI"
+#define GAMEZONE_WMI_CLASS      L"LENOVO_GAMEZONE_DATA"
+#define METHOD_GET_GPU_GPS      L"GetGpuGpsState"   // WmiMethodId 5
+#define METHOD_SET_GPU_GPS      L"SetGpuGpsState"   // WmiMethodId 6
 
-typedef int (*NvAPI_Disp_SetPreferredDGPU_t)(unsigned int gpuIndex, unsigned int enable);
-typedef int (*NvAPI_Disp_GetCurrentDGPUMode_t)(unsigned int* pMode);
+// GPU working mode constants
+#define GPU_MODE_HYBRID       1u   // Optimus: iGPU display, dGPU on-demand
+#define GPU_MODE_HYBRID_IGPU  2u   // dGPU fully disconnected
+#define GPU_MODE_HYBRID_AUTO  3u   // auto on AC/battery
+#define GPU_MODE_DGPU         4u   // dGPU drives display directly
 
-struct NvapiCtx {
-    HMODULE                         dll            = nullptr;
-    NvAPI_QueryInterface_t          QueryInterface = nullptr;
-    NvAPI_Initialize_t              Initialize     = nullptr;
-    NvAPI_Unload_t                  Unload         = nullptr;
-    NvAPI_Disp_SetPreferredDGPU_t   SetDGPU        = nullptr;
-    NvAPI_Disp_GetCurrentDGPUMode_t GetMode        = nullptr;
-    bool                            ok             = false;
+struct WmiCtx {
+    IWbemLocator*  pLocator  = nullptr;
+    IWbemServices* pServices = nullptr;
+    bool           ok        = false;
 };
 
-static NvapiCtx g_nvapi;
+static WmiCtx g_wmi;
 
-static bool NvapiLoad()
+static bool WmiInit()
 {
-    g_nvapi.dll = LoadLibraryA("nvapi64.dll");
-    if (!g_nvapi.dll) g_nvapi.dll = LoadLibraryA("nvapi.dll"); // 32-bit fallback
-    if (!g_nvapi.dll) return false;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return false;
 
-    g_nvapi.QueryInterface =
-        (NvAPI_QueryInterface_t)GetProcAddress(g_nvapi.dll, "nvapi_QueryInterface");
-    if (!g_nvapi.QueryInterface) return false;
+    hr = CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
+                              RPC_C_AUTHN_LEVEL_DEFAULT,
+                              RPC_C_IMP_LEVEL_IMPERSONATE,
+                              nullptr, EOAC_NONE, nullptr);
+    // RPC_E_TOO_LATE is fine — security already initialized
+    if (FAILED(hr) && hr != RPC_E_TOO_LATE) { CoUninitialize(); return false; }
 
-    g_nvapi.Initialize     = (NvAPI_Initialize_t)          g_nvapi.QueryInterface(0x0150E828u);
-    g_nvapi.Unload         = (NvAPI_Unload_t)              g_nvapi.QueryInterface(0xD22BDD7Eu);
-    g_nvapi.SetDGPU        = (NvAPI_Disp_SetPreferredDGPU_t)   g_nvapi.QueryInterface(NVAPI_ID_DISP_SET_PREFERRED_DGPU);
-    g_nvapi.GetMode        = (NvAPI_Disp_GetCurrentDGPUMode_t) g_nvapi.QueryInterface(NVAPI_ID_DISP_GET_CURRENT_DGPU_MODE);
+    hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                          IID_IWbemLocator, (void**)&g_wmi.pLocator);
+    if (FAILED(hr)) { CoUninitialize(); return false; }
 
-    if (!g_nvapi.Initialize) return false;
-    int status = g_nvapi.Initialize();
-    g_nvapi.ok = (status == 0); // NVAPI_OK == 0
-    return g_nvapi.ok;
+    hr = g_wmi.pLocator->ConnectServer(
+            _bstr_t(GAMEZONE_WMI_NAMESPACE), nullptr, nullptr, nullptr,
+            0, nullptr, nullptr, &g_wmi.pServices);
+    if (FAILED(hr)) { g_wmi.pLocator->Release(); CoUninitialize(); return false; }
+
+    hr = CoSetProxyBlanket(g_wmi.pServices,
+                           RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                           RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                           nullptr, EOAC_NONE);
+    if (FAILED(hr)) {
+        g_wmi.pServices->Release();
+        g_wmi.pLocator->Release();
+        CoUninitialize();
+        return false;
+    }
+
+    g_wmi.ok = true;
+    return true;
 }
 
-static void NvapiUnload()
+static void WmiShutdown()
 {
-    if (g_nvapi.ok && g_nvapi.Unload) g_nvapi.Unload();
-    if (g_nvapi.dll) { FreeLibrary(g_nvapi.dll); g_nvapi.dll = nullptr; }
-    g_nvapi.ok = false;
+    if (g_wmi.pServices) { g_wmi.pServices->Release(); g_wmi.pServices = nullptr; }
+    if (g_wmi.pLocator)  { g_wmi.pLocator->Release();  g_wmi.pLocator  = nullptr; }
+    if (g_wmi.ok) CoUninitialize();
+    g_wmi.ok = false;
+}
+
+// Execute a LENOVO_GAMEZONE_DATA WMI method.
+// inParamName / inValue: optional input parameter (pass nullptr to skip).
+// outParamName / outValue: optional output parameter to read back.
+static HRESULT WmiCallGameZone(
+    const wchar_t* method,
+    const wchar_t* inParamName,  DWORD  inValue,
+    const wchar_t* outParamName, DWORD* outValue)
+{
+    if (!g_wmi.ok) return E_NOT_VALID_STATE;
+
+    // Get class object for in-param definition
+    IWbemClassObject* pClass    = nullptr;
+    IWbemClassObject* pInClass  = nullptr;
+    IWbemClassObject* pInInst   = nullptr;
+    IWbemClassObject* pOutInst  = nullptr;
+
+    HRESULT hr = g_wmi.pServices->GetObject(
+        _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pClass, nullptr);
+    if (FAILED(hr)) return hr;
+
+    // Find the first instance path  (InstanceName)
+    IEnumWbemClassObject* pEnum = nullptr;
+    hr = g_wmi.pServices->CreateInstanceEnum(
+        _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pEnum);
+    if (FAILED(hr)) { pClass->Release(); return hr; }
+
+    IWbemClassObject* pInstance = nullptr;
+    ULONG uReturned = 0;
+    hr = pEnum->Next(WBEM_INFINITE, 1, &pInstance, &uReturned);
+    pEnum->Release();
+    if (FAILED(hr) || uReturned == 0) { pClass->Release(); return E_NOINTERFACE; }
+
+    VARIANT vPath;
+    VariantInit(&vPath);
+    hr = pInstance->Get(L"__PATH", 0, &vPath, nullptr, nullptr);
+    pInstance->Release();
+    if (FAILED(hr)) { pClass->Release(); return hr; }
+
+    // Build input parameters if needed
+    if (inParamName)
+    {
+        IWbemClassObject* pMethodDef = nullptr;
+        hr = pClass->GetMethod(method, 0, &pInClass, nullptr);
+        if (SUCCEEDED(hr) && pInClass)
+        {
+            pInClass->SpawnInstance(0, &pInInst);
+            VARIANT vIn;
+            vIn.vt     = VT_I4;
+            vIn.lVal   = (LONG)inValue;
+            pInInst->Put(inParamName, 0, &vIn, 0);
+        }
+    }
+
+    // Execute
+    hr = g_wmi.pServices->ExecMethod(
+        V_BSTR(&vPath), _bstr_t(method), 0, nullptr,
+        pInInst, &pOutInst, nullptr);
+
+    if (SUCCEEDED(hr) && outParamName && outValue && pOutInst)
+    {
+        VARIANT vOut;
+        VariantInit(&vOut);
+        if (SUCCEEDED(pOutInst->Get(outParamName, 0, &vOut, nullptr, nullptr)))
+        {
+            *outValue = (DWORD)V_I4(&vOut);
+            VariantClear(&vOut);
+        }
+    }
+
+    VariantClear(&vPath);
+    if (pInInst)  pInInst->Release();
+    if (pInClass) pInClass->Release();
+    if (pOutInst) pOutInst->Release();
+    pClass->Release();
+    return hr;
 }
 
 // ── GPU state ────────────────────────────────────────────────────────────────
 
-enum class GpuMode { Unknown, IGPU, DGPU };
+enum class GpuMode { Unknown, Hybrid, DGPU };
 static GpuMode g_currentMode = GpuMode::Unknown;
 
-// Returns true if MUX is currently routed to dGPU
 static GpuMode QueryMode()
 {
-    if (!g_nvapi.ok || !g_nvapi.GetMode) return GpuMode::Unknown;
-    unsigned int mode = 0;
-    int r = g_nvapi.GetMode(&mode);
-    if (r != 0) return GpuMode::Unknown;
-    // mode == 1  → dGPU active on display output
-    // mode == 0  → iGPU active (Optimus/auto)
-    return (mode == 1) ? GpuMode::DGPU : GpuMode::IGPU;
+    DWORD val = 0;
+    HRESULT hr = WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val);
+    if (FAILED(hr)) return GpuMode::Unknown;
+    return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
 }
 
 static bool SetMode(GpuMode target)
 {
-    if (!g_nvapi.ok || !g_nvapi.SetDGPU) return false;
-    unsigned int enable = (target == GpuMode::DGPU) ? 1u : 0u;
-    int r = g_nvapi.SetDGPU(0, enable); // gpuIndex 0 = primary dGPU
-    return (r == 0);
+    DWORD val = (target == GpuMode::DGPU) ? GPU_MODE_DGPU : GPU_MODE_HYBRID;
+    HRESULT hr = WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr);
+    return SUCCEEDED(hr);
 }
 
 // ── Tray icon rendering ──────────────────────────────────────────────────────
-// We paint a 16×16 DIB with a filled circle and a centred letter.
-// No external resources; fully self-contained.
+// 16×16 DIB: filled circle + centred bold letter.
+// Softer muted colours; letter drawn at 13 px for better visibility.
 
 static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
 {
     const int SZ = 16;
 
-    // ── 1. Create a compatible DC and a 32-bpp DIB ───────────────────────────
     HDC hdcScreen = GetDC(nullptr);
     HDC hdcMem    = CreateCompatibleDC(hdcScreen);
 
     BITMAPINFOHEADER bih = {};
     bih.biSize        = sizeof(bih);
     bih.biWidth       = SZ;
-    bih.biHeight      = -SZ; // top-down
+    bih.biHeight      = -SZ;
     bih.biPlanes      = 1;
     bih.biBitCount    = 32;
     bih.biCompression = BI_RGB;
 
     BITMAPINFO bi = {};
-    bi.bmiHeader = bih;
+    bi.bmiHeader  = bih;
 
-    void* bits = nullptr;
-    HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
+    void* bits    = nullptr;
+    HBITMAP hBmp  = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP hOld  = (HBITMAP)SelectObject(hdcMem, hBmp);
 
-    // ── 2. Paint filled circle ───────────────────────────────────────────────
+    // Background: pure black → becomes transparent via mask
+    RECT rc = { 0, 0, SZ, SZ };
+    FillRect(hdcMem, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+    // Filled circle (slightly inset for a 1-px margin)
     HBRUSH hBrush = CreateSolidBrush(bg);
     HPEN   hPen   = CreatePen(PS_SOLID, 1, bg);
     HPEN   hOldP  = (HPEN)SelectObject(hdcMem, hPen);
     HBRUSH hOldB  = (HBRUSH)SelectObject(hdcMem, hBrush);
-
-    // Transparent fill first
-    RECT rc = {0, 0, SZ, SZ};
-    FillRect(hdcMem, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
-
-    Ellipse(hdcMem, 0, 0, SZ, SZ);
-
+    Ellipse(hdcMem, 1, 1, SZ - 1, SZ - 1);
     SelectObject(hdcMem, hOldP);
     SelectObject(hdcMem, hOldB);
     DeleteObject(hBrush);
     DeleteObject(hPen);
 
-    // ── 3. Draw the letter centred ───────────────────────────────────────────
+    // Letter: 13 px bold, centred — larger and more visible than before
     HFONT hFont = CreateFontW(
-        11, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS,
         L"Segoe UI"
@@ -155,108 +240,103 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, COLORREF fg)
     HFONT hOldF = (HFONT)SelectObject(hdcMem, hFont);
     SetBkMode(hdcMem, TRANSPARENT);
     SetTextColor(hdcMem, fg);
-
-    WCHAR s[2] = {letter, 0};
+    WCHAR s[2] = { letter, 0 };
     DrawTextW(hdcMem, s, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
     SelectObject(hdcMem, hOldF);
     DeleteObject(hFont);
 
-    // ── 4. Build the mask (1-bit; black = opaque) ────────────────────────────
+    // Mask: black pixels in colour bitmap → transparent
     HDC     hdcMask = CreateCompatibleDC(hdcScreen);
     HBITMAP hMask   = CreateBitmap(SZ, SZ, 1, 1, nullptr);
     HBITMAP hOldM   = (HBITMAP)SelectObject(hdcMask, hMask);
-
-    // Set mask: pixels matching pure black in the colour bitmap → transparent
     SetBkColor(hdcMem, RGB(0, 0, 0));
     BitBlt(hdcMask, 0, 0, SZ, SZ, hdcMem, 0, 0, SRCCOPY);
-
     SelectObject(hdcMask, hOldM);
     SelectObject(hdcMem, hOld);
 
-    // ── 5. Compose ICONINFO ──────────────────────────────────────────────────
-    ICONINFO ii  = {};
-    ii.fIcon     = TRUE;
-    ii.hbmColor  = hBmp;
-    ii.hbmMask   = hMask;
-    HICON hIcon  = CreateIconIndirect(&ii);
+    ICONINFO ii = {};
+    ii.fIcon    = TRUE;
+    ii.hbmColor = hBmp;
+    ii.hbmMask  = hMask;
+    HICON hIcon = CreateIconIndirect(&ii);
 
     DeleteObject(hBmp);
     DeleteObject(hMask);
     DeleteDC(hdcMem);
     DeleteDC(hdcMask);
     ReleaseDC(nullptr, hdcScreen);
-
     return hIcon;
 }
 
-static HICON g_hIconIGPU   = nullptr;
-static HICON g_hIconDGPU   = nullptr;
-static HICON g_hIconUnknown= nullptr;
+// Softer, muted palette — less saturated than before
+// iGPU : steel blue    (#5B8DB8 → RGB(91,141,184))
+// dGPU : muted green   (#5AA06A → RGB(90,160,106))
+// unk  : medium grey   (#888888 → RGB(136,136,136))
+static HICON g_hIconHybrid  = nullptr;
+static HICON g_hIconDGPU    = nullptr;
+static HICON g_hIconUnknown = nullptr;
 
 static void CreateIcons()
 {
-    g_hIconIGPU    = MakeLetterIcon(L'I', RGB(30, 100, 220),  RGB(255, 255, 255)); // blue
-    g_hIconDGPU    = MakeLetterIcon(L'N', RGB(30, 180,  60),  RGB(255, 255, 255)); // green
-    g_hIconUnknown = MakeLetterIcon(L'?', RGB(120, 120, 120), RGB(255, 255, 255)); // grey
+    g_hIconHybrid  = MakeLetterIcon(L'I', RGB( 91, 141, 184), RGB(255, 255, 255));
+    g_hIconDGPU    = MakeLetterIcon(L'N', RGB( 90, 160, 106), RGB(255, 255, 255));
+    g_hIconUnknown = MakeLetterIcon(L'?', RGB(136, 136, 136), RGB(255, 255, 255));
 }
 
 static void DestroyIcons()
 {
-    if (g_hIconIGPU)    { DestroyIcon(g_hIconIGPU);    g_hIconIGPU    = nullptr; }
+    if (g_hIconHybrid)  { DestroyIcon(g_hIconHybrid);  g_hIconHybrid  = nullptr; }
     if (g_hIconDGPU)    { DestroyIcon(g_hIconDGPU);    g_hIconDGPU    = nullptr; }
     if (g_hIconUnknown) { DestroyIcon(g_hIconUnknown); g_hIconUnknown = nullptr; }
 }
 
 // ── Tray management ──────────────────────────────────────────────────────────
 
-#define WM_TRAY   (WM_USER + 1)
-#define TRAY_ID   1
+#define WM_TRAY  (WM_USER + 1)
+#define TRAY_ID  1
 
 static HWND      g_hwnd  = nullptr;
 static HINSTANCE g_hInst = nullptr;
 
-// Tooltip text: e.g. "dGPU active — NVIDIA GeForce RTX 4060"
-static std::wstring BuildTooltip(GpuMode mode)
+static HICON ModeIcon(GpuMode m)
 {
-    if (mode == GpuMode::DGPU)   return L"dGPU active \u2014 NVIDIA (Advanced Optimus)";
-    if (mode == GpuMode::IGPU)   return L"iGPU active \u2014 Intel integrated";
-    return L"GPU mode unknown";
+    if (m == GpuMode::DGPU)   return g_hIconDGPU;
+    if (m == GpuMode::Hybrid) return g_hIconHybrid;
+    return g_hIconUnknown;
 }
 
-static void UpdateTrayIcon(GpuMode mode)
+static std::wstring ModeTooltip(GpuMode m)
 {
-    HICON icon = (mode == GpuMode::DGPU)  ? g_hIconDGPU :
-                 (mode == GpuMode::IGPU)  ? g_hIconIGPU :
-                                            g_hIconUnknown;
-    std::wstring tip = BuildTooltip(mode);
-
-    NOTIFYICONDATA nid  = {};
-    nid.cbSize          = sizeof(nid);
-    nid.hWnd            = g_hwnd;
-    nid.uID             = TRAY_ID;
-    nid.uFlags          = NIF_ICON | NIF_TIP;
-    nid.hIcon           = icon;
-    StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), tip.c_str());
-    Shell_NotifyIconW(NIM_MODIFY, &nid);
+    if (m == GpuMode::DGPU)   return L"dGPU active \u2014 NVIDIA RTX (Discrete mode)";
+    if (m == GpuMode::Hybrid) return L"Hybrid active \u2014 Intel iGPU (Optimus mode)";
+    return L"GPU mode unknown \u2014 WMI call failed";
 }
 
-static void AddTrayIcon(GpuMode mode)
+static void AddTrayIcon(GpuMode m)
 {
-    HICON icon = (mode == GpuMode::DGPU)  ? g_hIconDGPU :
-                 (mode == GpuMode::IGPU)  ? g_hIconIGPU :
-                                            g_hIconUnknown;
-    std::wstring tip = BuildTooltip(mode);
-
-    NOTIFYICONDATA nid  = {};
-    nid.cbSize          = sizeof(nid);
-    nid.hWnd            = g_hwnd;
-    nid.uID             = TRAY_ID;
-    nid.uFlags          = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage= WM_TRAY;
-    nid.hIcon           = icon;
+    std::wstring tip = ModeTooltip(m);
+    NOTIFYICONDATA nid   = {};
+    nid.cbSize           = sizeof(nid);
+    nid.hWnd             = g_hwnd;
+    nid.uID              = TRAY_ID;
+    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAY;
+    nid.hIcon            = ModeIcon(m);
     StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), tip.c_str());
     Shell_NotifyIconW(NIM_ADD, &nid);
+}
+
+static void UpdateTrayIcon(GpuMode m)
+{
+    std::wstring tip = ModeTooltip(m);
+    NOTIFYICONDATA nid = {};
+    nid.cbSize         = sizeof(nid);
+    nid.hWnd           = g_hwnd;
+    nid.uID            = TRAY_ID;
+    nid.uFlags         = NIF_ICON | NIF_TIP;
+    nid.hIcon          = ModeIcon(m);
+    StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), tip.c_str());
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 static void RemoveTrayIcon()
@@ -270,36 +350,36 @@ static void RemoveTrayIcon()
 
 // ── Window procedure ─────────────────────────────────────────────────────────
 
-#define CMD_REVERT  1
-#define CMD_EXIT    2
+#define CMD_REVERT 1
+#define CMD_EXIT   2
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_TRAY && lParam == WM_RBUTTONUP)
     {
         GpuMode mode = QueryMode();
-        std::wstring modeLabel = (mode == GpuMode::DGPU) ? L"Active: dGPU (NVIDIA)"
-                               : (mode == GpuMode::IGPU) ? L"Active: iGPU (Intel)"
-                               :                           L"Active: Unknown";
+        std::wstring label =
+            (mode == GpuMode::DGPU)   ? L"Active: dGPU (NVIDIA Discrete)" :
+            (mode == GpuMode::Hybrid) ? L"Active: Hybrid (Intel iGPU)"    :
+                                        L"Active: Unknown";
 
         HMENU menu = CreatePopupMenu();
-        // Greyed-out status label at top
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, modeLabel.c_str());
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, CMD_REVERT, L"Revert to iGPU now");
-        AppendMenuW(menu, MF_STRING, CMD_EXIT,   L"Exit (auto-revert)");
+        AppendMenuW(menu, MF_STRING, CMD_REVERT, L"Revert to Hybrid (iGPU) now");
+        AppendMenuW(menu, MF_STRING, CMD_EXIT,   L"Exit (auto-revert to Hybrid)");
 
-        SetForegroundWindow(hwnd); // required to dismiss menu on click-away
+        SetForegroundWindow(hwnd);
         POINT pt;
         GetCursorPos(&pt);
         int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                                  pt.x, pt.y, 0, hwnd, nullptr);
-        PostMessage(hwnd, WM_NULL, 0, 0); // flush the SetForegroundWindow
+        PostMessage(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
 
         if (cmd == CMD_REVERT)
         {
-            SetMode(GpuMode::IGPU);
+            SetMode(GpuMode::Hybrid);
             g_currentMode = QueryMode();
             UpdateTrayIcon(g_currentMode);
         }
@@ -317,7 +397,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     g_hInst = hInst;
 
-    // ── Single-instance guard ─────────────────────────────────────────────
+    // Single-instance guard
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"GpuTraySwitcher_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
@@ -327,63 +407,60 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 1;
     }
 
-    // ── Create message-only window ────────────────────────────────────────
-    WNDCLASSW wc    = {};
-    wc.lpfnWndProc  = WndProc;
-    wc.hInstance    = hInst;
-    wc.lpszClassName= L"GpuTrayClass";
+    // Message-only window (never appears in taskbar)
+    WNDCLASSW wc     = {};
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance     = hInst;
+    wc.lpszClassName = L"GpuTrayClass";
     RegisterClassW(&wc);
-
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"",
                              0, 0, 0, 0, 0,
-                             HWND_MESSAGE,   // message-only — never in taskbar
-                             nullptr, hInst, nullptr);
+                             HWND_MESSAGE, nullptr, hInst, nullptr);
 
-    // ── Load icons ────────────────────────────────────────────────────────
     CreateIcons();
 
-    // ── Init NVAPI and switch to dGPU ─────────────────────────────────────
-    bool nvapiOk = NvapiLoad();
-    if (!nvapiOk)
+    // Initialise WMI
+    bool wmiOk = WmiInit();
+    if (!wmiOk)
     {
-        // NVAPI not available: show a grey "?" icon and warn once
         AddTrayIcon(GpuMode::Unknown);
         MessageBoxW(nullptr,
-            L"NVAPI could not be loaded.\n\n"
-            L"This tool requires an NVIDIA driver (510+) and an Advanced Optimus laptop.\n"
-            L"The tray icon will remain but GPU switching is unavailable.",
-            L"GPU Tray Switcher — NVAPI unavailable",
+            L"WMI initialisation failed.\n\n"
+            L"This tool requires the LENOVO_GAMEZONE_DATA WMI class present on\n"
+            L"Lenovo Legion laptops. GPU switching is unavailable.",
+            L"GPU Tray Switcher \u2014 WMI Error",
             MB_OK | MB_ICONWARNING);
     }
     else
     {
+        // Switch to dGPU mode
         bool switched = SetMode(GpuMode::DGPU);
+
+        // Give the EC/driver up to 1.5 s to apply (WMI call returns before
+        // the embedded controller has finished the MUX operation)
+        Sleep(1500);
         g_currentMode = QueryMode();
-
-        if (!switched || g_currentMode != GpuMode::DGPU)
-        {
-            // SetDGPU call may have succeeded at driver level; re-query after
-            // a short spin to let the driver settle (MUX switch is async).
-            Sleep(400);
-            g_currentMode = QueryMode();
-        }
-
         AddTrayIcon(g_currentMode);
 
-        if (g_currentMode != GpuMode::DGPU)
+        if (!switched)
         {
-            // Non-fatal: the driver may require a display reconnect or the
-            // system may not support in-session MUX switching. Inform user.
             MessageBoxW(nullptr,
-                L"dGPU mode was requested but the active GPU could not be confirmed.\n\n"
-                L"Your system may require a display reconnect or logout to complete the switch.\n"
-                L"Some Advanced Optimus implementations only apply the MUX change at next login.",
-                L"GPU Tray Switcher \u2014 Note",
-                MB_OK | MB_ICONINFORMATION);
+                L"The WMI call to SetGpuGpsState returned an error.\n\n"
+                L"Ensure you are running as Administrator and that\n"
+                L"Lenovo Vantage / Legion Zone services are not conflicting.",
+                L"GPU Tray Switcher \u2014 Switch Error",
+                MB_OK | MB_ICONWARNING);
+        }
+        else if (g_currentMode != GpuMode::DGPU)
+        {
+            // Switch was requested successfully but mode hasn't confirmed yet.
+            // This is normal on some firmware — the icon will update if you
+            // reopen the tray menu (it re-queries each time).
+            // No modal dialog here to avoid interrupting workflow.
         }
     }
 
-    // ── Message loop ──────────────────────────────────────────────────────
+    // Message loop
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0))
     {
@@ -391,17 +468,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         DispatchMessage(&msg);
     }
 
-    // ── Cleanup: revert to iGPU, remove tray icon ─────────────────────────
-    if (nvapiOk)
+    // Cleanup: revert to Hybrid, brief visual confirmation, then exit
+    if (wmiOk)
     {
-        SetMode(GpuMode::IGPU);
-        // Briefly show iGPU icon as visual confirmation before exit
-        UpdateTrayIcon(GpuMode::IGPU);
+        SetMode(GpuMode::Hybrid);
+        UpdateTrayIcon(GpuMode::Hybrid);
         Sleep(600);
     }
 
     RemoveTrayIcon();
-    NvapiUnload();
+    WmiShutdown();
     DestroyIcons();
 
     ReleaseMutex(hMutex);
