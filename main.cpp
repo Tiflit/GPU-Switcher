@@ -883,16 +883,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     if (g_log.is_open())
         g_log << L"GPU-Switcher started\n";
 
-    if (!IsAdmin())
-    {
-        MessageBoxW(nullptr,
-                    L"This tool must be run as Administrator.\n\n"
-                    L"Right-click the .exe and choose \"Run as administrator\".",
-                    L"GPU-Switcher",
-                    MB_ICONERROR | MB_OK);
-        return 1;
-    }
-
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LenovoGpuTrayMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
         return 0;
