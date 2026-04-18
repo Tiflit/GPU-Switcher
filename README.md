@@ -1,70 +1,61 @@
-# Lenovo Legion dGPU Switcher
+# Lenovo Legion dGPU Display Switcher
 
-A minimal Windows tray application for Lenovo Legion laptops with NVIDIA dGPU.  
-**No installation required. Build entirely online via GitHub Actions.**
+A tiny Windows tray utility for Lenovo Legion / IdeaPad Gaming laptops that support GPU mode switching through Lenovo’s **LENOVO_GAMEZONE_DATA** WMI interface.
 
----
-
-## What it does
-
-Tray icon key:
-
-- 🟢 **N** — NVIDIA dGPU active (Discrete mode)
-- 🔵 **I** — Intel iGPU active (Hybrid/Optimus mode)
-- ⚫ **?** — WMI unavailable / mode unknown
+The tool automatically switches the system to **dGPU display mode** on launch, shows a **vendor‑colored tray icon**, and lets you manually switch between **iGPU** and **dGPU** display modes.  
+On exit, it always returns the system to **iGPU display mode**.
 
 ---
 
-## Requirements
+## 🎨 Tray icon meaning
 
-| | |
-|---|---|
-| **OS** | Windows 10 / 11 (64-bit) |
-| **Device** | Lenovo Legion laptop (any generation with GPU Working Mode support) |
-| **Privileges** | **Run as Administrator** (WMI LENOVO_GAMEZONE_DATA requires elevation) |
+The icon shows the **active display GPU**:
 
-> **Will it work on non-Legion Lenovo laptops?**  
-> Possibly — any Lenovo with the `LENOVO_GAMEZONE_DATA` WMI class should work.  
-> This includes IdeaPad Gaming series. Try it and check the tray tooltip.
-
-> **Will it work on non-Lenovo laptops?**  
-> No. The WMI interface is Lenovo-specific. ASUS, MSI, Razer etc. each have  
-> their own proprietary EC/WMI interfaces for GPU mode switching.
+| GPU | Vendor | Icon |
+|-----|--------|------|
+| iGPU | Intel | 🔵 **i** |
+| iGPU | AMD | 🔴 **a** |
+| iGPU | NVIDIA | 🟢 **n** |
+| dGPU | Intel | 🔵 **I** |
+| dGPU | NVIDIA | 🟢 **N** |
+| dGPU | AMD | 🔴 **A** |
+| Unknown | — | ⚫ **?** |
 
 ---
 
-## How it works
+## 🖱️ How to use
 
-The tool uses Lenovo's `LENOVO_GAMEZONE_DATA` WMI class (GUID `887B54E3-DDDC-4B2C-8B88-68A26A8835D0`),
-the same interface used by LenovoLegionToolkit and Legion Zone internally:
+After launching the `.exe`, the tool appears in the system tray.
 
-| WMI Method | Method ID | Purpose |
-|---|---|---|
-| `GetGpuGpsState` | 5 | Read current GPU working mode |
-| `SetGpuGpsState` | 6 | Set GPU working mode |
+Right‑click the icon to access:
 
-GPU mode values:
+- **Switch to iGPU display mode**  
+- **Switch to dGPU display mode**  
+- **Exit and switch to iGPU display mode (Vendor dGPU)**  
 
-| Value | Name | Description |
-|---|---|---|
-| 1 | Hybrid | iGPU drives display, dGPU renders on-demand (best battery) |
-| 2 | HybridIGPU | dGPU fully disconnected (maximum battery saving) |
-| 3 | HybridAuto | Auto-switches on AC/battery |
-| **4** | **dGPU** | **dGPU drives display directly (best performance)** |
-
-This tool switches between **mode 4** (on launch) and **mode 1** (on exit/revert).
+Hovering the icon shows the active GPU model.
 
 ---
 
-## Limitations
+## ⚠️ Requirements
 
-- Lenovo Legion (and compatible Lenovo) laptops only
-- Requires Administrator privileges
-- The EC may take 1–2 seconds to apply the mode change after the WMI call
-- Switching too frequently may confuse the EC; wait a few seconds between switches
+- Windows 10 / 11 (64‑bit)  
+- Lenovo Legion or IdeaPad Gaming laptop  
+- Must be run as **Administrator**  
+- System must expose the **LENOVO_GAMEZONE_DATA** WMI class  
+- Any Intel / AMD / NVIDIA iGPU + dGPU combination
+
+> This tool **does not work** on non‑Lenovo laptops.
 
 ---
 
-## License
+## 📦 No installation needed
 
-MIT — do what you want, no warranty.
+Just download the `.exe` and run it.  
+The tool is portable and leaves no files behind.
+
+---
+
+## 📜 License
+
+MIT — free to use, modify, and distribute.
