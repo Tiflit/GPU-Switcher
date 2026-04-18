@@ -10,8 +10,8 @@
  *   4 = dGPU        (dGPU drives display directly — best performance)
  *
  * Behaviour:
- *   Launch  -> set mode 4 (dGPU)
- *   Exit    -> set mode 1 (Hybrid / iGPU display)
+ *   Launch  -> automatically switch to mode 4 (dGPU)
+ *   Exit    -> always switch back to mode 1 (Hybrid / iGPU display)
  *   Right-click:
  *      - Shows active GPU + model (iGPU/dGPU)
  *      - Offers "Switch to iGPU display mode" or "Switch to dGPU display mode"
@@ -25,6 +25,10 @@
  *       a / A = AMD (red)
  *     Lowercase = iGPU, uppercase = dGPU
  *   - Grey '?' when unsupported / WMI unavailable
+ *
+ * Notifications:
+ *   - A balloon notification is shown whenever the display GPU mode changes
+ *     (on launch, manual switch, or external change detected by polling).
  */
 
 #include <Windows.h>
@@ -243,7 +247,7 @@ static bool SetMode(GpuMode target)
 struct GpuInfo
 {
     std::wstring name;
-    UINT         vendorId   = 0;
+    UINT         vendorId     = 0;
     bool         isIntegrated = false;
 };
 
@@ -495,6 +499,9 @@ static std::wstring ModeTooltip(GpuMode mode)
 static HWND      g_hwnd  = nullptr;
 static HINSTANCE g_hInst = nullptr;
 
+// Forward declaration for notifications
+static void ShowSwitchNotification(GpuMode mode);
+
 static void AddTrayIcon(GpuMode mode)
 {
     std::wstring tip = ModeTooltip(mode);
@@ -529,6 +536,9 @@ static void RefreshTrayIcon(GpuMode newMode)
     nid.hIcon          = ModeIcon(newMode);
     StringCchCopyW(nid.szTip, ARRAYSIZE(nid.szTip), tip.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+
+    // Show a balloon notification when the display GPU mode changes
+    ShowSwitchNotification(newMode);
 }
 
 static void RemoveTrayIcon()
@@ -538,6 +548,46 @@ static void RemoveTrayIcon()
     nid.hWnd   = g_hwnd;
     nid.uID    = TRAY_ID;
     Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+static void ShowSwitchNotification(GpuMode mode)
+{
+    NOTIFYICONDATA nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd   = g_hwnd;
+    nid.uID    = TRAY_ID;
+    nid.uFlags = NIF_INFO;
+
+    std::wstring title = L"GPU display mode switched";
+    StringCchCopyW(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle), title.c_str());
+
+    std::wstring msg;
+    const GpuInfo* info = ActiveGpuInfo(mode);
+
+    if (!g_wmi.ok)
+    {
+        msg = L"GPU mode unknown (WMI unavailable).";
+    }
+    else if (!info)
+    {
+        msg = L"GPU mode changed.";
+    }
+    else
+    {
+        if (mode == GpuMode::DGPU)
+            msg = L"Display is now driven by dGPU: ";
+        else if (mode == GpuMode::Hybrid)
+            msg = L"Display is now driven by iGPU: ";
+        else
+            msg = L"GPU mode changed: ";
+
+        msg += info->name;
+    }
+
+    StringCchCopyW(nid.szInfo, ARRAYSIZE(nid.szInfo), msg.c_str());
+    nid.dwInfoFlags = NIIF_INFO;
+
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 // ── Window procedure ─────────────────────────────────────────────────────────
@@ -551,7 +601,6 @@ static std::wstring DgpuVendorLabel()
         return L"dGPU";
 
     const GpuInfo& d = g_dGpu;
-    // Use vendor name only if we can infer it
     if (d.vendorId == 0x8086) return L"Intel dGPU";
     if (d.vendorId == 0x10DE) return L"NVIDIA dGPU";
     if (d.vendorId == 0x1002 || d.vendorId == 0x1022) return L"AMD dGPU";
@@ -685,15 +734,30 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 1;
     }
 
-    // Message-only window
+    // Hidden overlapped window (not message-only) so Shell_NotifyIcon callbacks work
     WNDCLASSW wc     = {};
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
     wc.lpszClassName = L"GpuTrayClass";
     RegisterClassW(&wc);
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"",
-                             0, 0, 0, 0, 0,
-                             HWND_MESSAGE, nullptr, hInst, nullptr);
+
+    g_hwnd = CreateWindowExW(
+        0,
+        wc.lpszClassName,
+        L"GpuTrayHidden",
+        WS_OVERLAPPED,
+        0, 0, 0, 0,
+        nullptr, nullptr, hInst, nullptr
+    );
+
+    if (!g_hwnd)
+    {
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
+        return 1;
+    }
+
+    ShowWindow(g_hwnd, SW_HIDE);
 
     // Detect GPUs (for tooltips/icons) and create icons (DPI-aware)
     DetectGpus();
@@ -714,9 +778,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     }
     else
     {
+        // On launch: automatically switch to dGPU mode
         bool switched = SetMode(GpuMode::DGPU);
-        // Wait for the EC to apply the MUX change before first query
-        Sleep(1500);
+        Sleep(1500); // allow EC to apply the change
         g_currentMode = QueryMode();
         AddTrayIcon(g_currentMode);
 
@@ -732,6 +796,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
                 L"GPU Tray Switcher \u2014 Switch Error",
                 MB_OK | MB_ICONWARNING);
         }
+
+        // Show initial notification for the display GPU
+        ShowSwitchNotification(g_currentMode);
 
         // Start live-poll timer: refreshes icon every 5 s with minimal overhead
         SetTimer(g_hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, nullptr);
