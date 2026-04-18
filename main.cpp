@@ -1,10 +1,8 @@
 /*
  * gpu_tray — Lenovo Legion dGPU Display Switcher
- * - Auto-switch to dGPU on launch
- * - Auto-switch to iGPU on exit
- * - Balloon notifications ONLY when QueryMode detects a real change
- * - Vendor-colored DPI-aware tray icons
- * - Manual switching + 5s polling
+ * Improvements:
+ *  - Uses ComPtr for all COM objects (no leaks, higher reliability)
+ *  - Checks for Administrator privileges at startup
  */
 
 #include <Windows.h>
@@ -12,8 +10,11 @@
 #include <wbemidl.h>
 #include <comdef.h>
 #include <dxgi1_6.h>
+#include <wrl/client.h>
 #include <string>
 #include <strsafe.h>
+
+using Microsoft::WRL::ComPtr;
 
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "ole32.lib")
@@ -21,7 +22,30 @@
 #pragma comment(lib, "dxgi.lib")
 
 // ============================================================================
-//  Lenovo WMI Interface
+//  Admin privilege check
+// ============================================================================
+
+static bool IsAdmin()
+{
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = nullptr;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
+
+    if (AllocateAndInitializeSid(
+            &NtAuthority, 2,
+            SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS,
+            0,0,0,0,0,0,
+            &adminGroup))
+    {
+        CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+        FreeSid(adminGroup);
+    }
+    return isAdmin == TRUE;
+}
+
+// ============================================================================
+//  WMI configuration
 // ============================================================================
 
 #define GAMEZONE_WMI_NAMESPACE  L"ROOT\\WMI"
@@ -33,8 +57,8 @@
 #define GPU_MODE_DGPU     4u
 
 struct WmiCtx {
-    IWbemLocator*  pLocator  = nullptr;
-    IWbemServices* pServices = nullptr;
+    ComPtr<IWbemLocator>  pLocator;
+    ComPtr<IWbemServices> pServices;
     bool ok = false;
 };
 
@@ -45,26 +69,31 @@ static bool WmiInit()
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return false;
 
-    hr = CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
-                              RPC_C_AUTHN_LEVEL_DEFAULT,
-                              RPC_C_IMP_LEVEL_IMPERSONATE,
-                              nullptr, EOAC_NONE, nullptr);
+    hr = CoInitializeSecurity(
+        nullptr, -1, nullptr, nullptr,
+        RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        nullptr, EOAC_NONE, nullptr);
     if (FAILED(hr) && hr != RPC_E_TOO_LATE)
         return false;
 
-    hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_IWbemLocator, (void**)&g_wmi.pLocator);
+    hr = CoCreateInstance(
+        CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&g_wmi.pLocator));
     if (FAILED(hr)) return false;
 
     hr = g_wmi.pLocator->ConnectServer(
-        _bstr_t(GAMEZONE_WMI_NAMESPACE), nullptr, nullptr, nullptr,
-        0, nullptr, nullptr, &g_wmi.pServices);
+        _bstr_t(GAMEZONE_WMI_NAMESPACE),
+        nullptr, nullptr, nullptr,
+        0, nullptr, nullptr,
+        &g_wmi.pServices);
     if (FAILED(hr)) return false;
 
-    hr = CoSetProxyBlanket(g_wmi.pServices,
-                           RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
-                           RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
-                           nullptr, EOAC_NONE);
+    hr = CoSetProxyBlanket(
+        g_wmi.pServices.Get(),
+        RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+        RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+        nullptr, EOAC_NONE);
     if (FAILED(hr)) return false;
 
     g_wmi.ok = true;
@@ -73,10 +102,8 @@ static bool WmiInit()
 
 static void WmiShutdown()
 {
-    if (g_wmi.pServices) g_wmi.pServices->Release();
-    if (g_wmi.pLocator)  g_wmi.pLocator->Release();
-    if (g_wmi.ok)        CoUninitialize();
     g_wmi = {};
+    CoUninitialize();
 }
 
 static HRESULT WmiCallGameZone(
@@ -86,45 +113,34 @@ static HRESULT WmiCallGameZone(
 {
     if (!g_wmi.ok) return E_NOT_VALID_STATE;
 
-    IWbemClassObject* pClass = nullptr;
+    ComPtr<IWbemClassObject> pClass;
     HRESULT hr = g_wmi.pServices->GetObject(
         _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pClass, nullptr);
     if (FAILED(hr)) return hr;
 
-    IEnumWbemClassObject* pEnum = nullptr;
+    ComPtr<IEnumWbemClassObject> pEnum;
     hr = g_wmi.pServices->CreateInstanceEnum(
         _bstr_t(GAMEZONE_WMI_CLASS), 0, nullptr, &pEnum);
-    if (FAILED(hr))
-    {
-        pClass->Release();
-        return hr;
-    }
+    if (FAILED(hr)) return hr;
 
-    IWbemClassObject* pInst = nullptr;
+    ComPtr<IWbemClassObject> pInst;
     ULONG uReturned = 0;
     hr = pEnum->Next(WBEM_INFINITE, 1, &pInst, &uReturned);
-    pEnum->Release();
-    if (FAILED(hr) || uReturned == 0)
-    {
-        pClass->Release();
-        return E_NOINTERFACE;
-    }
+    if (FAILED(hr) || uReturned == 0) return E_NOINTERFACE;
 
     VARIANT vPath;
     VariantInit(&vPath);
     hr = pInst->Get(L"__PATH", 0, &vPath, nullptr, nullptr);
-    pInst->Release();
     if (FAILED(hr))
     {
         VariantClear(&vPath);
-        pClass->Release();
         return hr;
     }
 
-    IWbemClassObject* pInInst = nullptr;
+    ComPtr<IWbemClassObject> pInInst;
     if (inParamName)
     {
-        IWbemClassObject* pInClass = nullptr;
+        ComPtr<IWbemClassObject> pInClass;
         hr = pClass->GetMethod(method, 0, &pInClass, nullptr);
         if (SUCCEEDED(hr))
         {
@@ -136,13 +152,12 @@ static HRESULT WmiCallGameZone(
             pInInst->Put(inParamName, 0, &v, 0);
             VariantClear(&v);
         }
-        if (pInClass) pInClass->Release();
     }
 
-    IWbemClassObject* pOutInst = nullptr;
+    ComPtr<IWbemClassObject> pOutInst;
     hr = g_wmi.pServices->ExecMethod(
         V_BSTR(&vPath), _bstr_t(method), 0, nullptr,
-        pInInst, &pOutInst, nullptr);
+        pInInst.Get(), &pOutInst, nullptr);
 
     if (SUCCEEDED(hr) && outParamName && outValue && pOutInst)
     {
@@ -155,25 +170,31 @@ static HRESULT WmiCallGameZone(
         }
     }
 
-    if (pInInst)  pInInst->Release();
-    if (pOutInst) pOutInst->Release();
     VariantClear(&vPath);
-    pClass->Release();
     return hr;
 }
 
 // ============================================================================
-//  GPU Mode
+//  GPU logic
 // ============================================================================
 
 enum class GpuMode { Unknown, Hybrid, DGPU };
 static GpuMode g_currentMode = GpuMode::Unknown;
 
+struct GpuInfo {
+    std::wstring name;
+    UINT vendorId = 0;
+    bool isIntegrated = false;
+};
+
+static GpuInfo g_iGpu, g_dGpu;
+static bool g_haveIGpu = false, g_haveDGpu = false;
+
 static GpuMode QueryMode()
 {
     DWORD val = 0;
-    HRESULT hr = WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val);
-    if (FAILED(hr)) return GpuMode::Unknown;
+    if (FAILED(WmiCallGameZone(METHOD_GET_GPU_GPS, nullptr, 0, L"Data", &val)))
+        return GpuMode::Unknown;
     return (val == GPU_MODE_DGPU) ? GpuMode::DGPU : GpuMode::Hybrid;
 }
 
@@ -183,46 +204,23 @@ static bool SetMode(GpuMode target)
     return SUCCEEDED(WmiCallGameZone(METHOD_SET_GPU_GPS, L"Data", val, nullptr, nullptr));
 }
 
-// ============================================================================
-//  DXGI GPU Detection
-// ============================================================================
-
-struct GpuInfo {
-    std::wstring name;
-    UINT vendorId = 0;
-    bool isIntegrated = false;
-};
-
-static GpuInfo g_iGpu;
-static GpuInfo g_dGpu;
-static bool g_haveIGpu = false;
-static bool g_haveDGpu = false;
-
 static void DetectGpus()
 {
-    IDXGIFactory1* pFactory = nullptr;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory)))
+    ComPtr<IDXGIFactory1> pFactory;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                  (void**)pFactory.GetAddressOf())))
         return;
 
     for (UINT i = 0;; ++i)
     {
-        IDXGIAdapter1* pAdapter = nullptr;
+        ComPtr<IDXGIAdapter1> pAdapter;
         HRESULT hr = pFactory->EnumAdapters1(i, &pAdapter);
         if (hr == DXGI_ERROR_NOT_FOUND) break;
-        if (FAILED(hr) || !pAdapter) continue;
+        if (FAILED(hr)) continue;
 
         DXGI_ADAPTER_DESC1 desc;
-        if (FAILED(pAdapter->GetDesc1(&desc)))
-        {
-            pAdapter->Release();
-            continue;
-        }
-
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-        {
-            pAdapter->Release();
-            continue;
-        }
+        if (FAILED(pAdapter->GetDesc1(&desc))) continue;
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
 
         bool integrated = (desc.DedicatedVideoMemory == 0);
 
@@ -241,11 +239,7 @@ static void DetectGpus()
             g_dGpu = info;
             g_haveDGpu = true;
         }
-
-        pAdapter->Release();
     }
-
-    pFactory->Release();
 }
 
 static const GpuInfo* ActiveGpuInfo(GpuMode mode)
@@ -256,7 +250,7 @@ static const GpuInfo* ActiveGpuInfo(GpuMode mode)
 }
 
 // ============================================================================
-//  Icon Rendering
+//  Icons
 // ============================================================================
 
 static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
@@ -281,34 +275,28 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
 
-    RECT rc = { 0,0,SZ,SZ };
+    RECT rc = {0,0,SZ,SZ};
     HBRUSH hBg = CreateSolidBrush(RGB(0,0,0));
     FillRect(hdcMem, &rc, hBg);
     DeleteObject(hBg);
 
     HBRUSH hBrush = CreateSolidBrush(bg);
     HPEN hPen = CreatePen(PS_SOLID, 1, bg);
-    HPEN hOldP = (HPEN)SelectObject(hdcMem, hPen);
-    HBRUSH hOldB = (HBRUSH)SelectObject(hdcMem, hBrush);
-    Ellipse(hdcMem, 1, 1, SZ - 1, SZ - 1);
-    SelectObject(hdcMem, hOldP);
-    SelectObject(hdcMem, hOldB);
+    SelectObject(hdcMem, hBrush);
+    SelectObject(hdcMem, hPen);
+    Ellipse(hdcMem, 1, 1, SZ-1, SZ-1);
     DeleteObject(hBrush);
     DeleteObject(hPen);
 
-    int fontHeight = SZ - 3;
-    if (fontHeight < 8) fontHeight = 8;
-
     HFONT hFont = CreateFontW(
-        fontHeight, 0, 0, 0, FW_HEAVY, FALSE, FALSE, FALSE,
+        SZ-3, 0, 0, 0, FW_HEAVY, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS,
-        L"Segoe UI"
-    );
+        L"Segoe UI");
     HFONT hOldF = (HFONT)SelectObject(hdcMem, hFont);
     SetBkMode(hdcMem, TRANSPARENT);
     SetTextColor(hdcMem, RGB(255,255,255));
-    WCHAR s[2] = { letter, 0 };
+    WCHAR s[2] = {letter, 0};
     DrawTextW(hdcMem, s, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     SelectObject(hdcMem, hOldF);
     DeleteObject(hFont);
@@ -319,7 +307,6 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     SetBkColor(hdcMem, RGB(0,0,0));
     BitBlt(hdcMask, 0, 0, SZ, SZ, hdcMem, 0, 0, SRCCOPY);
     SelectObject(hdcMask, hOldM);
-    SelectObject(hdcMem, hOld);
 
     ICONINFO ii = {};
     ii.fIcon = TRUE;
@@ -350,13 +337,10 @@ static void CreateIcons()
     if (sz <= 0) sz = 16;
 
     g_hIconUnknown = MakeLetterIcon(L'?', RGB(136,136,136), sz);
-
     g_hIconIntel_i = MakeLetterIcon(L'i', RGB(91,141,184), sz);
     g_hIconIntel_I = MakeLetterIcon(L'I', RGB(91,141,184), sz);
-
     g_hIconNvidia_n = MakeLetterIcon(L'n', RGB(90,160,106), sz);
     g_hIconNvidia_N = MakeLetterIcon(L'N', RGB(90,160,106), sz);
-
     g_hIconAmd_a = MakeLetterIcon(L'a', RGB(200,80,80), sz);
     g_hIconAmd_A = MakeLetterIcon(L'A', RGB(200,80,80), sz);
 }
@@ -409,7 +393,7 @@ static std::wstring ModeTooltip(GpuMode mode)
 }
 
 // ============================================================================
-//  Tray Icon + Notifications
+//  Tray + notifications
 // ============================================================================
 
 #define WM_TRAY          (WM_USER + 1)
@@ -500,10 +484,6 @@ static void RemoveTrayIcon()
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-// ============================================================================
-//  Window Procedure
-// ============================================================================
-
 static std::wstring DgpuVendorLabel()
 {
     if (!g_haveDGpu) return L"dGPU";
@@ -513,6 +493,10 @@ static std::wstring DgpuVendorLabel()
     if (d.vendorId == 0x1002 || d.vendorId == 0x1022) return L"AMD dGPU";
     return L"dGPU";
 }
+
+// ============================================================================
+//  Window procedure
+// ============================================================================
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -572,7 +556,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SetForegroundWindow(hwnd);
         POINT pt;
         GetCursorPos(&pt);
-        int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+        int cmd = TrackPopupMenu(menu,
+                                 TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                                  pt.x, pt.y, 0, hwnd, nullptr);
         PostMessage(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
@@ -616,11 +601,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 // ============================================================================
-//  Entry Point
+//  Entry point
 // ============================================================================
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
+    if (!IsAdmin())
+    {
+        MessageBoxW(nullptr,
+                    L"This tool must be run as Administrator.\n\n"
+                    L"Right-click the .exe and choose \"Run as administrator\".",
+                    L"GPU Tray Switcher",
+                    MB_ICONERROR | MB_OK);
+        return 1;
+    }
+
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LenovoGpuTrayMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
         return 0;
@@ -632,6 +627,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
                     L"This tool only works on supported Lenovo systems.",
                     L"GPU Tray Switcher",
                     MB_ICONERROR | MB_OK);
+        if (hMutex)
+        {
+            ReleaseMutex(hMutex);
+            CloseHandle(hMutex);
+        }
         return 1;
     }
 
@@ -656,24 +656,27 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     if (!g_hwnd)
     {
+        DestroyIcons();
         WmiShutdown();
+        if (hMutex)
+        {
+            ReleaseMutex(hMutex);
+            CloseHandle(hMutex);
+        }
         return 1;
     }
 
     ShowWindow(g_hwnd, SW_HIDE);
 
-    // Initial mode: switch to dGPU on launch
+    // Switch to dGPU on launch
     GpuMode initial = QueryMode();
     if (initial != GpuMode::DGPU && g_wmi.ok)
     {
         if (SetMode(GpuMode::DGPU))
-        {
             Sleep(1500);
-        }
     }
 
-    g_currentMode = GpuMode::Unknown; // force first Refresh to update + maybe notify
-
+    g_currentMode = GpuMode::Unknown;
     GpuMode live = QueryMode();
     AddTrayIcon(live);
     RefreshTrayIcon(live);
