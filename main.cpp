@@ -38,16 +38,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     // Register a tiny hidden window
     WNDCLASSW wc = {};
+    wc.style         = CS_OWNDC;          // <── NVIDIA-detectable hint
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
     wc.lpszClassName = L"TrayHookClass";
     RegisterClassW(&wc);
 
-    // NOTE: Window title added here ("GPU-Switcher")
+    // Hidden window with a title (Option 1 already applied)
     HWND hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         wc.lpszClassName,
-        L"GPU-Switcher",   // <── NVIDIA-detectable title
+        L"GPU-Switcher",
         WS_POPUP,
         0, 0, 0, 0,
         nullptr, nullptr, hInst, nullptr
