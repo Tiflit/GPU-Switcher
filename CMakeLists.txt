@@ -28,15 +28,13 @@ target_link_libraries(gpu_tray PRIVATE
 if(MSVC)
     target_compile_options(gpu_tray PRIVATE /W4 /WX /permissive-)
 
-    # Embed the manifest via mt.exe after linking.
-    # We use a custom post-build command rather than LINK_FLAGS so CMake does
-    # not emit a conflicting /MANIFEST:EMBED flag of its own (which caused the
-    # "duplicate /MANIFEST:EMBED" linker error seen previously).
+    # Embed manifest post-build.
+    # The semicolon in -outputresource:<file>;1 must be escaped as \; in CMake
+    # otherwise CMake splits it into two separate arguments and mt.exe errors.
     add_custom_command(TARGET gpu_tray POST_BUILD
-        COMMAND mt.exe
-            -nologo
+        COMMAND mt.exe -nologo
             -manifest "${CMAKE_CURRENT_SOURCE_DIR}/gpu_tray.manifest"
-            -outputresource:"$<TARGET_FILE:gpu_tray>";1
+            "-outputresource:$<TARGET_FILE:gpu_tray>\\;1"
         COMMENT "Embedding manifest into gpu_tray.exe"
     )
 endif()
