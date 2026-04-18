@@ -1,7 +1,9 @@
 /*
  * gpu_tray — Lenovo Legion dGPU Display Switcher
- * - Uses ComPtr for COM (no leaks)
- * - Checks for Administrator privileges at startup
+ * Improvements:
+ * - Fixed LNK2019 build errors by adding comsuppw.lib
+ * - Fixed Tray Icon interaction bug (Version 4 message packing)
+ * - Improved GPU detection fallback for "dGPU Only" modes
  */
 
 #include <Windows.h>
@@ -19,6 +21,7 @@ using Microsoft::WRL::ComPtr;
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "comsuppw.lib") // Required for _bstr_t linker support
 
 // ============================================================================
 //  Admin privilege check
@@ -127,14 +130,9 @@ static HRESULT WmiCallGameZone(
     hr = pEnum->Next(WBEM_INFINITE, 1, &pInst, &uReturned);
     if (FAILED(hr) || uReturned == 0) return E_NOINTERFACE;
 
-    VARIANT vPath;
-    VariantInit(&vPath);
+    _variant_t vPath;
     hr = pInst->Get(L"__PATH", 0, &vPath, nullptr, nullptr);
-    if (FAILED(hr))
-    {
-        VariantClear(&vPath);
-        return hr;
-    }
+    if (FAILED(hr)) return hr;
 
     ComPtr<IWbemClassObject> pInInst;
     if (inParamName)
@@ -144,12 +142,8 @@ static HRESULT WmiCallGameZone(
         if (SUCCEEDED(hr))
         {
             pInClass->SpawnInstance(0, &pInInst);
-            VARIANT v;
-            VariantInit(&v);
-            v.vt = VT_I4;
-            v.lVal = (LONG)inValue;
+            _variant_t v((long)inValue);
             pInInst->Put(inParamName, 0, &v, 0);
-            VariantClear(&v);
         }
     }
 
@@ -160,16 +154,13 @@ static HRESULT WmiCallGameZone(
 
     if (SUCCEEDED(hr) && outParamName && outValue && pOutInst)
     {
-        VARIANT vOut;
-        VariantInit(&vOut);
+        _variant_t vOut;
         if (SUCCEEDED(pOutInst->Get(outParamName, 0, &vOut, nullptr, nullptr)))
         {
             *outValue = (DWORD)V_I4(&vOut);
-            VariantClear(&vOut);
         }
     }
 
-    VariantClear(&vPath);
     return hr;
 }
 
@@ -206,8 +197,7 @@ static bool SetMode(GpuMode target)
 static void DetectGpus()
 {
     ComPtr<IDXGIFactory1> pFactory;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
-                                  (void**)pFactory.GetAddressOf())))
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&pFactory))))
         return;
 
     for (UINT i = 0;; ++i)
@@ -221,7 +211,8 @@ static void DetectGpus()
         if (FAILED(pAdapter->GetDesc1(&desc))) continue;
         if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
 
-        bool integrated = (desc.DedicatedVideoMemory == 0);
+        // On laptops, the dGPU usually has dedicated memory while the iGPU is 0 or very small
+        bool integrated = (desc.VendorId != 0x10DE && desc.DedicatedVideoMemory < 1024 * 1024 * 1024);
 
         GpuInfo info;
         info.vendorId = desc.VendorId;
@@ -238,6 +229,13 @@ static void DetectGpus()
             g_dGpu = info;
             g_haveDGpu = true;
         }
+    }
+
+    // Fallback: If iGPU is hidden by BIOS, treat the dGPU as the only info source
+    if (g_haveDGpu && !g_haveIGpu)
+    {
+        g_iGpu = g_dGpu;
+        g_haveIGpu = true;
     }
 }
 
@@ -271,8 +269,7 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     bi.bmiHeader = bih;
 
     void* bits = nullptr;
-    HBITMAP hBmp = CreateDIBSection(
-        hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
 
     RECT rc = {0,0,SZ,SZ};
@@ -298,6 +295,7 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     SetTextColor(hdcMem, RGB(255,255,255));
     WCHAR s[2] = {letter, 0};
     DrawTextW(hdcMem, s, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    
     SelectObject(hdcMem, hOldF);
     DeleteObject(hFont);
 
@@ -306,9 +304,7 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     HBITMAP hOldM = (HBITMAP)SelectObject(hdcMask, hMask);
     SetBkColor(hdcMem, RGB(0,0,0));
     BitBlt(hdcMask, 0, 0, SZ, SZ, hdcMem, 0, 0, SRCCOPY);
-
     SelectObject(hdcMask, hOldM);
-    SelectObject(hdcMem, hOld);
 
     ICONINFO ii = {};
     ii.fIcon = TRUE;
@@ -316,6 +312,7 @@ static HICON MakeLetterIcon(WCHAR letter, COLORREF bg, int size)
     ii.hbmMask = hMask;
     HICON hIcon = CreateIconIndirect(&ii);
 
+    SelectObject(hdcMem, hOld);
     DeleteObject(hBmp);
     DeleteObject(hMask);
     DeleteDC(hdcMem);
@@ -417,7 +414,7 @@ static void ShowSwitchNotification(GpuMode mode)
     nid.uFlags = NIF_INFO;
 
     StringCchCopyW(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle),
-                   L"GPU display mode changed");
+                    L"GPU display mode changed");
 
     const GpuInfo* info = ActiveGpuInfo(mode);
     std::wstring msg;
@@ -517,85 +514,93 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    if (msg == WM_TRAY && lParam == WM_RBUTTONUP)
+    if (msg == WM_TRAY)
     {
-        GpuMode mode = QueryMode();
-        RefreshTrayIcon(mode);
+        // NOTIFYICON_VERSION_4 packs the mouse message in the low word of lParam
+        UINT mouseMsg = LOWORD(lParam);
 
-        const GpuInfo* info = ActiveGpuInfo(mode);
-        std::wstring label;
-
-        if (!g_wmi.ok)
-            label = L"Active GPU: Unknown (WMI unavailable)";
-        else if (!info)
-            label = L"Active GPU: Unknown";
-        else
+        if (mouseMsg == WM_CONTEXTMENU || mouseMsg == WM_RBUTTONUP)
         {
-            label = L"Active GPU: ";
-            label += info->name;
-            if (mode == GpuMode::DGPU) label += L" (dGPU)";
-            else if (mode == GpuMode::Hybrid) label += L" (iGPU display)";
-        }
+            GpuMode mode = QueryMode();
+            RefreshTrayIcon(mode);
 
-        std::wstring toggleText;
-        if (mode == GpuMode::DGPU)
-            toggleText = L"Switch to iGPU display mode";
-        else if (mode == GpuMode::Hybrid)
-            toggleText = L"Switch to dGPU display mode";
-        else
-            toggleText = L"Switch GPU display mode";
+            const GpuInfo* info = ActiveGpuInfo(mode);
+            std::wstring label;
 
-        std::wstring exitText = L"Exit and switch to iGPU display mode (";
-        exitText += DgpuVendorLabel();
-        exitText += L")";
-
-        HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, CMD_TOGGLE, toggleText.c_str());
-        AppendMenuW(menu, MF_STRING, CMD_EXIT,   exitText.c_str());
-
-        SetForegroundWindow(hwnd);
-        POINT pt;
-        GetCursorPos(&pt);
-        int cmd = TrackPopupMenu(menu,
-                                 TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                                 pt.x, pt.y, 0, hwnd, nullptr);
-        PostMessage(hwnd, WM_NULL, 0, 0);
-        DestroyMenu(menu);
-
-        if (cmd == CMD_TOGGLE)
-        {
-            if (!g_wmi.ok) return 0;
-
-            GpuMode current = QueryMode();
-            if (current == GpuMode::DGPU)
+            if (!g_wmi.ok)
+                label = L"Active GPU: Unknown (WMI unavailable)";
+            else if (!info)
+                label = L"Active GPU: Unknown";
+            else
             {
-                if (SetMode(GpuMode::Hybrid))
+                label = L"Active GPU: ";
+                label += info->name;
+                if (mode == GpuMode::DGPU) label += L" (dGPU)";
+                else if (mode == GpuMode::Hybrid) label += L" (iGPU display)";
+            }
+
+            std::wstring toggleText;
+            if (mode == GpuMode::DGPU)
+                toggleText = L"Switch to iGPU display mode";
+            else if (mode == GpuMode::Hybrid)
+                toggleText = L"Switch to dGPU display mode";
+            else
+                toggleText = L"Switch GPU display mode";
+
+            std::wstring exitText = L"Exit and switch to iGPU display mode (";
+            exitText += DgpuVendorLabel();
+            exitText += L")";
+
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.c_str());
+            AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu, MF_STRING, CMD_TOGGLE, toggleText.c_str());
+            AppendMenuW(menu, MF_STRING, CMD_EXIT,   exitText.c_str());
+
+            SetForegroundWindow(hwnd);
+            
+            // Get current mouse position for modern tray behavior
+            POINT pt;
+            GetCursorPos(&pt);
+            
+            int cmd = TrackPopupMenu(menu,
+                                    TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                                    pt.x, pt.y, 0, hwnd, nullptr);
+            PostMessage(hwnd, WM_NULL, 0, 0);
+            DestroyMenu(menu);
+
+            if (cmd == CMD_TOGGLE)
+            {
+                if (!g_wmi.ok) return 0;
+
+                GpuMode current = QueryMode();
+                if (current == GpuMode::DGPU)
                 {
-                    Sleep(1500);
-                    RefreshTrayIcon(QueryMode());
+                    if (SetMode(GpuMode::Hybrid))
+                    {
+                        Sleep(1500);
+                        RefreshTrayIcon(QueryMode());
+                    }
+                }
+                else if (current == GpuMode::Hybrid)
+                {
+                    if (SetMode(GpuMode::DGPU))
+                    {
+                        Sleep(1500);
+                        RefreshTrayIcon(QueryMode());
+                    }
                 }
             }
-            else if (current == GpuMode::Hybrid)
+            else if (cmd == CMD_EXIT)
             {
-                if (SetMode(GpuMode::DGPU))
+                if (g_wmi.ok)
                 {
+                    SetMode(GpuMode::Hybrid);
                     Sleep(1500);
-                    RefreshTrayIcon(QueryMode());
                 }
+                PostQuitMessage(0);
             }
         }
-        else if (cmd == CMD_EXIT)
-        {
-            if (g_wmi.ok)
-            {
-                SetMode(GpuMode::Hybrid);
-                Sleep(1500);
-            }
-            PostQuitMessage(0);
-        }
-
         return 0;
     }
 
@@ -642,7 +647,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
-    wc.hInstance     = hInst;
+    wc.hInstance      = hInst;
     wc.lpszClassName = L"GpuTrayClass";
     RegisterClassW(&wc);
 
@@ -670,7 +675,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     ShowWindow(g_hwnd, SW_HIDE);
 
-    // Switch to dGPU on launch
+    // Initial sync
     GpuMode initial = QueryMode();
     if (initial != GpuMode::DGPU && g_wmi.ok)
     {
