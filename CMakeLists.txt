@@ -24,23 +24,3 @@ target_link_libraries(gpu_tray PRIVATE
     user32
     gdi32
 )
-
-# ───────────────────────────────────────────────────────────────
-# Dummy tray executable (optional)
-# ───────────────────────────────────────────────────────────────
-add_executable(dummy_tray WIN32
-    dummy_tray.cpp
-)
-
-target_compile_definitions(dummy_tray PRIVATE
-    UNICODE
-    _UNICODE
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-)
-
-target_link_libraries(dummy_tray PRIVATE
-    shell32
-    user32
-    gdi32
-)
