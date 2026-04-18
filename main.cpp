@@ -1,10 +1,11 @@
 /*
  * gpu_tray — Lenovo Legion dGPU Display Switcher
- * - Uses ComPtr for COM (no leaks)
- * - Checks for Administrator privileges at startup
+ * - Automatic switch to dGPU on launch
+ * - Log file overwritten on each launch (gpu_tray.log)
  * - Correct GPU detection (Intel = iGPU, NVIDIA/AMD = dGPU)
- * - Correct exit menu text
- * - Lightweight logging via OutputDebugStringW
+ * - Improved startup switching logic (2-stage verification)
+ * - Uses ComPtr for COM (no leaks)
+ * - Single-file implementation
  */
 
 #include <Windows.h>
@@ -14,6 +15,7 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <string>
+#include <fstream>
 #include <strsafe.h>
 
 using Microsoft::WRL::ComPtr;
@@ -25,14 +27,16 @@ using Microsoft::WRL::ComPtr;
 #pragma comment(lib, "comsuppw.lib") // for _bstr_t
 
 // ============================================================================
-//  Lightweight logging
+//  Logging (overwrites file on each launch)
 // ============================================================================
 
-static void Log(const wchar_t* msg)
+static std::wofstream g_log;
+
+static void Log(const std::wstring& msg)
 {
-    OutputDebugStringW(L"[gpu_tray] ");
-    OutputDebugStringW(msg);
-    OutputDebugStringW(L"\n");
+    if (g_log.is_open())
+        g_log << msg << L"\n";
+    OutputDebugStringW((L"[gpu_tray] " + msg + L"\n").c_str());
 }
 
 // ============================================================================
@@ -238,7 +242,6 @@ static void DetectGpus()
         info.vendorId = desc.VendorId;
         info.name = desc.Description;
 
-        // Intel = iGPU, NVIDIA/AMD = dGPU
         bool integrated = (desc.VendorId == 0x8086);
         info.isIntegrated = integrated;
 
@@ -256,7 +259,6 @@ static void DetectGpus()
 
     if (!g_haveIGpu && g_haveDGpu)
     {
-        // Fallback for systems where iGPU is hidden
         g_iGpu = g_dGpu;
         g_haveIGpu = true;
         Log(L"DetectGpus: iGPU hidden, using dGPU as fallback");
@@ -286,10 +288,7 @@ static bool SetMode(GpuMode target)
         Log(L"SetMode: WmiCallGameZone failed");
         return false;
     }
-    if (target == GpuMode::DGPU)
-        Log(L"SetMode: requested DGPU");
-    else
-        Log(L"SetMode: requested HYBRID");
+    Log(target == GpuMode::DGPU ? L"SetMode: requested DGPU" : L"SetMode: requested HYBRID");
     return true;
 }
 
@@ -564,7 +563,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     if (msg == WM_TRAY)
     {
-        // NOTIFYICON_VERSION_4 packs the mouse message in the low word of lParam
         UINT mouseMsg = LOWORD(lParam);
 
         if (mouseMsg == WM_CONTEXTMENU || mouseMsg == WM_RBUTTONUP)
@@ -610,7 +608,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             SetForegroundWindow(hwnd);
 
-            // Get current mouse position for modern tray behavior
             POINT pt;
             GetCursorPos(&pt);
 
@@ -630,8 +627,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
                 if (SetMode(target))
                 {
-                    Sleep(1500);
-                    RefreshTrayIcon(QueryMode());
+                    Sleep(2000);
+                    GpuMode newMode = QueryMode();
+                    if (newMode != target)
+                    {
+                        Sleep(1000);
+                        newMode = QueryMode();
+                    }
+                    RefreshTrayIcon(newMode);
                 }
             }
             else if (cmd == (int)MenuCmd::Exit)
@@ -639,7 +642,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (g_wmi.ok)
                 {
                     SetMode(GpuMode::Hybrid);
-                    Sleep(1500);
+                    Sleep(2000);
                 }
                 PostQuitMessage(0);
             }
@@ -656,6 +659,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
+    // Open log file (overwrite each launch)
+    g_log.open(L"gpu_tray.log", std::ios::out | std::ios::trunc);
+    if (g_log.is_open())
+        g_log << L"gpu_tray started\n";
+
     if (!IsAdmin())
     {
         MessageBoxW(nullptr,
@@ -718,18 +726,55 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     ShowWindow(g_hwnd, SW_HIDE);
 
-    // Initial sync: prefer dGPU on launch
-    GpuMode initial = QueryMode();
-    if (initial != GpuMode::DGPU && g_wmi.ok)
+    // Automatic switch to dGPU on launch with 2-stage verification
+    if (g_wmi.ok)
     {
-        if (SetMode(GpuMode::DGPU))
-            Sleep(1500);
-    }
+        GpuMode initial = QueryMode();
+        Log(L"Startup: initial mode = " +
+            std::wstring(initial == GpuMode::DGPU ? L"DGPU" :
+                         initial == GpuMode::Hybrid ? L"HYBRID" : L"UNKNOWN"));
 
-    g_currentMode = GpuMode::Unknown;
-    GpuMode live = QueryMode();
-    AddTrayIcon(live);
-    RefreshTrayIcon(live);
+        if (initial != GpuMode::DGPU)
+        {
+            if (SetMode(GpuMode::DGPU))
+            {
+                Sleep(2000);
+                GpuMode newMode = QueryMode();
+                if (newMode != GpuMode::DGPU)
+                {
+                    Sleep(1000);
+                    newMode = QueryMode();
+                }
+                Log(L"Startup: mode after switch = " +
+                    std::wstring(newMode == GpuMode::DGPU ? L"DGPU" :
+                                 newMode == GpuMode::Hybrid ? L"HYBRID" : L"UNKNOWN"));
+                g_currentMode = GpuMode::Unknown;
+                AddTrayIcon(newMode);
+                RefreshTrayIcon(newMode);
+            }
+            else
+            {
+                Log(L"Startup: SetMode(DGPU) failed");
+                GpuMode live = QueryMode();
+                g_currentMode = GpuMode::Unknown;
+                AddTrayIcon(live);
+                RefreshTrayIcon(live);
+            }
+        }
+        else
+        {
+            g_currentMode = GpuMode::Unknown;
+            AddTrayIcon(initial);
+            RefreshTrayIcon(initial);
+        }
+    }
+    else
+    {
+        GpuMode live = QueryMode();
+        g_currentMode = GpuMode::Unknown;
+        AddTrayIcon(live);
+        RefreshTrayIcon(live);
+    }
 
     SetTimer(g_hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, nullptr);
 
@@ -745,7 +790,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     if (g_wmi.ok)
     {
         SetMode(GpuMode::Hybrid);
-        Sleep(1500);
+        Sleep(2000);
     }
 
     RemoveTrayIcon();
@@ -756,6 +801,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);
+    }
+
+    if (g_log.is_open())
+    {
+        g_log << L"gpu_tray exiting\n";
+        g_log.close();
     }
 
     return 0;
