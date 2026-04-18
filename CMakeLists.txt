@@ -5,9 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 add_executable(gpu_tray WIN32
-set_target_properties(gpu_tray PROPERTIES OUTPUT_NAME "GPU-Switcher")
     main.cpp
 )
+
+# Rename the final executable to GPU-Switcher.exe
+set_target_properties(gpu_tray PROPERTIES OUTPUT_NAME "GPU-Switcher")
 
 # ── Preprocessor definitions ──────────────────────────────────────────────────
 target_compile_definitions(gpu_tray PRIVATE
@@ -18,8 +20,6 @@ target_compile_definitions(gpu_tray PRIVATE
 )
 
 # ── Link libraries ────────────────────────────────────────────────────────────
-# WMI requires wbemuuid + ole32 + oleaut32.
-# DXGI is used to detect GPU vendors / names for tooltips and icons.
 target_link_libraries(gpu_tray PRIVATE
     shell32
     user32
@@ -33,9 +33,10 @@ target_link_libraries(gpu_tray PRIVATE
 # ── MSVC flags + manifest ─────────────────────────────────────────────────────
 if(MSVC)
     target_compile_options(gpu_tray PRIVATE /W4 /WX /permissive-)
+
     add_custom_command(TARGET gpu_tray POST_BUILD
-    COMMAND powershell -NoProfile -NonInteractive -Command
-        "mt.exe -nologo -manifest '${CMAKE_CURRENT_SOURCE_DIR}/GPU-Switcher.manifest' \"-outputresource:$<TARGET_FILE:gpu_tray>;1\""
-    COMMENT "Embedding manifest into GPU-Switcher.exe"
-)
+        COMMAND powershell -NoProfile -NonInteractive -Command
+            "mt.exe -nologo -manifest '${CMAKE_CURRENT_SOURCE_DIR}/GPU-Switcher.manifest' \"-outputresource:$<TARGET_FILE:gpu_tray>;1\""
+        COMMENT "Embedding manifest into GPU-Switcher.exe"
+    )
 endif()
