@@ -18,13 +18,9 @@ add_definitions(-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00)
 add_executable(GPU-Switcher WIN32
     src/main.cpp
     src/resource.rc
-
     src/gpu/gpu_detection.cpp
-    src/gpu/gpu_render_probe.cpp
-
     src/util/logging.cpp
     src/util/startup.cpp
-
     src/win/win_helpers.cpp
 )
 
