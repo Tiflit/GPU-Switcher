@@ -14,7 +14,6 @@ constexpr UINT ID_RESTART_GPU_DRIVER   = 2002;
 
 // Globals from main.cpp
 extern GpuState g_displayGpuState;
-extern GpuState g_renderGpuState;
 extern bool     g_enableDgpuRendering;
 
 // Persistent setting helpers
