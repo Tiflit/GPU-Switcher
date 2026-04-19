@@ -7,7 +7,7 @@
 // Returns true on success and fills outState.
 bool DetectDisplayGPU(GpuState& outState);
 
-// Creates a dummy D3D11 device to wake/activate the dGPU.
+// Creates a dummy D3D11 device on the dGPU (adapter with most VRAM).
 // Returns true on success.
 bool ActivateRenderGPU();
 
