@@ -2,9 +2,9 @@
 
 # GPU‑Switcher
 
-A tiny Windows tray utility that activates the laptop’s (or any PC, really) discrete GPU (dGPU) on launch and keeps it awake until exit. I needed an easy way to force dGPU display rendering without performance impact. This should allow low-latency streaming for games and a quick toggle to test and run apps on either the iGPU or dGPU for dual-graphics laptops that are difficult to manage.
+A tiny Windows tray utility meant for hybrid systems to activate the discrete GPU (dGPU) on launch and keep it alive. I needed a simple way to force dGPU display rendering without any performance impact on my laptops. This should allow low-latency streaming for games and a quick toggle to test and run apps on either the iGPU or dGPU for dual-graphics laptops (or any PC, really) that are difficult to manage.
 
-Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics, Intel + NVIDIA, etc.) where you want the dGPU ready without running a heavy application or if you don't want to manually configure every app through the driver control panels.
+Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics, Intel + NVIDIA, etc.) where you want the dGPU ready without running a heavy application or if you don't want to manually configure every app through the driver control panel.
 
 ---
 
@@ -26,8 +26,7 @@ Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics
 5. Set **Preferred graphics processor → High‑performance NVIDIA processor**
 6. Enable Automatic Display Switching (or the AMD equivalent)
 
-After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.  
-(AMD SmartShift / Smart Access Graphics behavior requires additional testing.)
+After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.
 
 ---
 
@@ -103,10 +102,13 @@ The D3D11 + driver‑hint approach is:
 - universal  
 - vendor‑agnostic  
 - future‑proof  
-- requires no admin rights  
+- requires no admin rights
+- or so say the coding chatbots, so far it's the only reliable way I found
 
 ---
 
 ## License
 
 MIT
+
+Idk what it means, this is a free world so do whatever you want as long as you link to the original work.
