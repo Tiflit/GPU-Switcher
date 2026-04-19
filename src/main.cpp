@@ -4,23 +4,18 @@
 #include "gpu/gpu_detection.h"
 #include "gpu/gpu_state.h"
 #include "tray/tray_icon.h"
-#include "util/startup.h"
 #include "win/win_helpers.h"
 #include "resource.h"
 
-// Global GPU state
-GpuState g_displayGpuState;
-bool     g_enableDgpuRendering = false;
-
-HINSTANCE g_hInst = nullptr;
+extern GpuState g_displayGpuState;
+extern bool     g_enableDgpuRendering;
+HINSTANCE       g_hInst = nullptr;
 
 void RefreshGpuState(HWND hwnd)
 {
     DetectDisplayGPU(g_displayGpuState);
 
-    UINT activeVendor = g_displayGpuState.vendor;
-
-    HICON icon = LoadDisplayIcon(activeVendor, g_hInst);
+    HICON icon = LoadDisplayIcon(g_displayGpuState.vendor, g_hInst);
 
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
@@ -46,7 +41,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 0;
     }
 
-    // Load persistent setting
     g_enableDgpuRendering = IsDgpuRenderingEnabled();
 
     WNDCLASSW wc = {};
@@ -64,18 +58,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Initial behavior based on setting
     if (g_enableDgpuRendering)
     {
         ActivateRenderGPU();
-        Sleep(150);
+        Sleep(500);
     }
 
     DetectDisplayGPU(g_displayGpuState);
 
-    UINT activeVendor = g_displayGpuState.vendor;
-
-    HICON icon = LoadDisplayIcon(activeVendor, g_hInst);
+    HICON icon = LoadDisplayIcon(g_displayGpuState.vendor, g_hInst);
     std::wstring tip = BuildGpuTooltip(g_displayGpuState);
 
     NOTIFYICONDATAW nid = {};
