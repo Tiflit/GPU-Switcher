@@ -59,7 +59,6 @@ void LogError(const std::wstring& msg)
     const size_t MAX_SIZE = 10 * 1024;
     if (existing.size() > MAX_SIZE)
     {
-        // Keep last half
         existing = existing.substr(existing.size() - MAX_SIZE / 2);
     }
 
@@ -234,8 +233,6 @@ bool InitD3D()
 // ───────────────────────────────────────────────────────────────
 HICON LoadDualIcon(UINT displayVendor, UINT renderVendor)
 {
-    int index = 0;
-
     auto vendorIndex = [](UINT v) {
         switch (v)
         {
@@ -249,7 +246,7 @@ HICON LoadDualIcon(UINT displayVendor, UINT renderVendor)
     int d = vendorIndex(displayVendor);
     int r = vendorIndex(renderVendor);
 
-    index = d * 4 + r; // 16 combinations
+    int index = d * 4 + r; // 16 combinations
 
     HICON icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(3000 + index));
     if (!icon)
@@ -278,7 +275,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0),
                         ID_RUN_AT_STARTUP, L"Run at startup");
 
-            // Error info
             if (g_displayVendor == 0 || g_renderVendor == 0)
                 AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"⚠ GPU detection error");
 
@@ -317,7 +313,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     g_hInst = hInst;
 
-    // Single-instance guard
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"GPUSwitcherMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
@@ -325,7 +320,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 0;
     }
 
-    // Register hidden window
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
@@ -341,14 +335,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Detect GPUs
     DetectDisplayGPU();
     InitD3D();
 
-    // Load icon
     g_currentIcon = LoadDualIcon(g_displayVendor, g_renderVendor);
 
-    // Add tray icon
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = hwnd;
@@ -368,7 +359,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
-    // Message loop
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0))
     {
