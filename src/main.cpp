@@ -18,7 +18,7 @@ extern "C" {
 // Global GPU state
 GpuState g_displayGpuState;
 GpuState g_renderGpuState;
-bool     g_forceRenderGpu = true;
+bool     g_enableDgpuRendering = false;
 
 HINSTANCE g_hInst = nullptr;
 
@@ -26,7 +26,7 @@ void RefreshGpuState(HWND hwnd)
 {
     DetectDisplayGPU(g_displayGpuState);
 
-    if (g_forceRenderGpu)
+    if (g_enableDgpuRendering)
         DetectRenderGPU(g_renderGpuState);
     else
         g_renderGpuState = {};
@@ -61,6 +61,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 0;
     }
 
+    // Load persistent setting
+    g_enableDgpuRendering = IsDgpuRenderingEnabled();
+
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
@@ -76,9 +79,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Initial detection
+    // Initial behavior based on setting
     DetectDisplayGPU(g_displayGpuState);
-    DetectRenderGPU(g_renderGpuState);
+
+    if (g_enableDgpuRendering)
+    {
+        ActivateRenderGPU();
+        Sleep(150);
+        DetectRenderGPU(g_renderGpuState);
+    }
+    else
+    {
+        g_renderGpuState = {};
+    }
 
     UINT activeVendor = (g_renderGpuState.vendor != 0)
                         ? g_renderGpuState.vendor
