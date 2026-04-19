@@ -6,6 +6,28 @@ Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics
 
 ---
 
+## Requirements
+
+- Windows 10 or 11 (64‑bit)
+- Any hybrid GPU laptop (NVIDIA, AMD, Intel)
+- D3D11‑capable discrete GPU
+- One‑time “High Performance” profile in NVIDIA Control Panel or AMD Radeon Software
+
+---
+
+## One‑time setup (NVIDIA)
+
+1. Open **NVIDIA Control Panel**  
+2. Go to **Manage 3D settings → Program Settings**  
+3. Add `GPU‑Switcher.exe`  
+4. Set **Preferred graphics processor → High‑performance NVIDIA processor**
+5. Enable Automatic Display Switching (or the AMD equivalent)
+
+After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.  
+(AMD SmartShift / Smart Access Graphics behavior requires additional testing.)
+
+---
+
 ## How it works
 
 On startup, GPU‑Switcher:
@@ -46,28 +68,6 @@ Right‑click menu:
 
 - **Run at startup** — toggles a `HKCU\...\Run` entry  
 - **Exit** — releases the GPU and removes the tray icon  
-
----
-
-## Requirements
-
-- Windows 10 or 11 (64‑bit)
-- Any hybrid GPU laptop (NVIDIA, AMD, Intel)
-- D3D11‑capable discrete GPU
-- One‑time “High Performance” profile in NVIDIA Control Panel or AMD Radeon Software
-
----
-
-## One‑time setup (NVIDIA)
-
-1. Open **NVIDIA Control Panel**  
-2. Go to **Manage 3D settings → Program Settings**  
-3. Add `GPU‑Switcher.exe`  
-4. Set **Preferred graphics processor → High‑performance NVIDIA processor**
-5. Enable Automatic Display Switching (or the AMD equivalent)
-
-After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.  
-(AMD SmartShift / Smart Access Graphics behavior requires additional testing.)
 
 ---
 
