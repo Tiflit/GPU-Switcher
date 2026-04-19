@@ -23,4 +23,6 @@ target_link_libraries(gpu_tray PRIVATE
     shell32
     user32
     gdi32
+    d3d11
+    dxgi
 )
