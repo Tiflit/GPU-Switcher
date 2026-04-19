@@ -17,6 +17,7 @@ Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics
 
 ## One‑time setup (NVIDIA)
 
+0. Run GPU-Switcher.exe
 1. Open **NVIDIA Control Panel**  
 2. Go to **Manage 3D settings → Program Settings**  
 3. Add `GPU‑Switcher.exe`  
