@@ -17,12 +17,12 @@ Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics
 
 ## One‑time setup (NVIDIA)
 
-0. Run GPU-Switcher.exe
-1. Open **NVIDIA Control Panel**  
-2. Go to **Manage 3D settings → Program Settings**  
-3. Add `GPU‑Switcher.exe`  
-4. Set **Preferred graphics processor → High‑performance NVIDIA processor**
-5. Enable Automatic Display Switching (or the AMD equivalent)
+1. Run GPU-Switcher.exe
+2. Open **NVIDIA Control Panel**  
+3. Go to **Manage 3D settings → Program Settings**  
+4. Add `GPU‑Switcher.exe`  
+5. Set **Preferred graphics processor → High‑performance NVIDIA processor**
+6. Enable Automatic Display Switching (or the AMD equivalent)
 
 After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.  
 (AMD SmartShift / Smart Access Graphics behavior requires additional testing.)
