@@ -15,6 +15,4 @@
     <path stroke="#a0a0a0" stroke-width=".9" d="M-5.4-2.2H5.4M-5.4 2.2H5.4"/>
     <rect x="-3.5" y="-3.5" width="7" height="7" rx="1.2" fill="#a0a0a0" stroke="#e0e0e0" stroke-width=".9" filter="url(#b)"/>
   </g>
-  <rect x="11.575" y="8.45" width=".85" height="4.6" rx=".6" stroke="#000" stroke-width=".1"/>
-  <circle cx="12" cy="14.5" r=".9" stroke="#000" stroke-width=".1"/>
 </svg>
