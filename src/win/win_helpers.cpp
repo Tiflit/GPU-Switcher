@@ -5,7 +5,6 @@
 
 // Globals from main.cpp
 extern GpuState g_displayGpuState;
-extern GpuState g_renderGpuState;
 extern bool     g_enableDgpuRendering;
 
 // Registry path for settings
@@ -89,6 +88,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
     case WM_DEVICECHANGE:
     case WM_POWERBROADCAST:
+        // Respect current setting after system/GPU changes
         if (g_enableDgpuRendering)
         {
             ActivateRenderGPU();
