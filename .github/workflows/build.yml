@@ -1,4 +1,4 @@
-name: Build gpu_tray
+name: Build GPU-Switcher
 
 on:
   push:
@@ -24,10 +24,10 @@ jobs:
           arch: x64
 
       - name: Configure CMake
-        run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build build --config Release
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
