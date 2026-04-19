@@ -1,7 +1,7 @@
 #include "resource.h"
 
-IDI_ICON_INTEL   ICON "../icons/ico/intel.ico"
-IDI_ICON_NVIDIA  ICON "../icons/ico/nvidia.ico"
-IDI_ICON_AMD     ICON "../icons/ico/amd.ico"
-IDI_ICON_UNKNOWN ICON "../icons/ico/unknown.ico"
-IDI_ICON_WARNING ICON "../icons/ico/warning.ico"
+IDI_ICON_INTEL   ICON "icons/ico/intel-blue.ico"
+IDI_ICON_NVIDIA  ICON "icons/ico/nvidia-green.ico"
+IDI_ICON_AMD     ICON "icons/ico/amd-red.ico"
+IDI_ICON_UNKNOWN ICON "icons/ico/unknown-grey.ico"
+IDI_ICON_WARNING ICON "icons/ico/warning-yellow.ico"
