@@ -18,16 +18,35 @@ extern "C" {
     __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 }
 
-#define WM_TRAY           (WM_USER + 1)
-#define TRAY_ID           1
-#define ID_RUN_AT_STARTUP 1001
-#define ID_EXIT           1002
+#define WM_TRAY             (WM_USER + 1)
+#define TRAY_ID             1
+#define ID_RUN_AT_STARTUP   1001
+#define ID_RESTART_GPU      1002
+#define ID_EXIT             1003
 
 static HINSTANCE             g_hInst   = nullptr;
 static ID3D11Device*         g_device  = nullptr;   // held alive to keep dGPU registered
 static ID3D11DeviceContext*  g_context = nullptr;
 
-// ── D3D device ────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────
+// Restart GPU driver (Ctrl + Win + Shift + B)
+// ───────────────────────────────────────────────────────────────
+static void RestartGpuDriver()
+{
+    keybd_event(VK_CONTROL, 0, 0, 0);
+    keybd_event(VK_LWIN,    0, 0, 0);
+    keybd_event(VK_SHIFT,   0, 0, 0);
+    keybd_event('B',        0, 0, 0);
+
+    keybd_event('B',        0, KEYEVENTF_KEYUP, 0);
+    keybd_event(VK_SHIFT,   0, KEYEVENTF_KEYUP, 0);
+    keybd_event(VK_LWIN,    0, KEYEVENTF_KEYUP, 0);
+    keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+}
+
+// ───────────────────────────────────────────────────────────────
+// Acquire dGPU by creating a persistent D3D11 device
+// ───────────────────────────────────────────────────────────────
 static bool AcquireDGpu()
 {
     IDXGIFactory1* factory = nullptr;
@@ -37,7 +56,6 @@ static bool AcquireDGpu()
         return false;
     }
 
-    // Pick the adapter with the most dedicated VRAM (the dGPU)
     IDXGIAdapter1* best     = nullptr;
     SIZE_T         bestVram = 0;
     IDXGIAdapter1* adapter  = nullptr;
@@ -66,7 +84,6 @@ static bool AcquireDGpu()
         return false;
     }
 
-    // D3D_DRIVER_TYPE_UNKNOWN is required when passing an explicit adapter
     HRESULT hr = D3D11CreateDevice(
         best,
         D3D_DRIVER_TYPE_UNKNOWN,
@@ -92,19 +109,13 @@ static bool AcquireDGpu()
 
 static void ReleaseDGpu()
 {
-    if (g_context)
-    {
-        g_context->Release();
-        g_context = nullptr;
-    }
-    if (g_device)
-    {
-        g_device->Release();
-        g_device = nullptr;
-    }
+    if (g_context) { g_context->Release(); g_context = nullptr; }
+    if (g_device)  { g_device->Release();  g_device  = nullptr; }
 }
 
-// ── Window procedure ──────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────
+// Window procedure
+// ───────────────────────────────────────────────────────────────
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -115,10 +126,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             HMENU menu = CreatePopupMenu();
 
             bool startup = IsStartupEnabled();
+
             AppendMenuW(menu,
                 MF_STRING | (startup ? MF_CHECKED : 0),
                 ID_RUN_AT_STARTUP,
                 L"Run at startup");
+
+            AppendMenuW(menu,
+                MF_STRING,
+                ID_RESTART_GPU,
+                L"Restart GPUs");
 
             AppendMenuW(menu,
                 MF_STRING,
@@ -139,13 +156,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             );
             DestroyMenu(menu);
 
-            if (cmd == ID_RUN_AT_STARTUP)
+            switch (cmd)
             {
+            case ID_RUN_AT_STARTUP:
                 SetStartup(!startup);
-            }
-            else if (cmd == ID_EXIT)
-            {
+                break;
+
+            case ID_RESTART_GPU:
+                RestartGpuDriver();
+                break;
+
+            case ID_EXIT:
                 PostQuitMessage(0);
+                break;
             }
         }
         return 0;
@@ -158,7 +181,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-// ── Entry point ───────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────
+// Entry point
+// ───────────────────────────────────────────────────────────────
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     g_hInst = hInst;
@@ -189,8 +214,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr
     );
 
-    // Acquire dGPU; if it fails, we still show the tray icon and log the error.
-    AcquireDGpu();
+    AcquireDGpu(); // logs errors but tray still appears
 
     HICON icon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APP_ICON));
 
