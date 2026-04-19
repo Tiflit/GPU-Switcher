@@ -18,18 +18,33 @@ add_definitions(-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00)
 add_executable(GPU-Switcher WIN32
     src/main.cpp
     src/resource.rc
+
+    # GPU
     src/gpu/gpu_detection.cpp
+    src/gpu/gpu_vendor.h
+    src/gpu/gpu_state.h
+
+    # Tray icon loader
+    src/tray/tray_icon.cpp
+    src/tray/tray_icon.h
+
+    # Utilities
     src/util/logging.cpp
     src/util/startup.cpp
+
+    # Windows helpers
     src/win/win_helpers.cpp
+    src/win/win_helpers.h
 )
 
 set_target_properties(GPU-Switcher PROPERTIES
     OUTPUT_NAME "GPU-Switcher"
 )
 
+# Add src/ as include root
 target_include_directories(GPU-Switcher PRIVATE src)
 
+# Preprocessor definitions
 target_compile_definitions(GPU-Switcher PRIVATE
     UNICODE
     _UNICODE
@@ -37,6 +52,7 @@ target_compile_definitions(GPU-Switcher PRIVATE
     NOMINMAX
 )
 
+# Required Windows + DXGI + D3D11 libs
 target_link_libraries(GPU-Switcher PRIVATE
     shell32
     user32
