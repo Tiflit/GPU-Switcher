@@ -44,9 +44,7 @@ bool DetectDisplayGPU(GpuState& outState)
     factory->Release();
 
     if (!found)
-    {
         LogError(L"No display GPU detected.");
-    }
 
     return found;
 }
@@ -57,8 +55,8 @@ bool DetectRenderGPU(GpuState& outState)
     ID3D11DeviceContext* context = nullptr;
 
     HRESULT hr = D3D11CreateDevice(
-        nullptr,                    // default adapter
-        D3D_DRIVER_TYPE_HARDWARE,   // hardware GPU
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
         0,
         nullptr,
@@ -122,7 +120,6 @@ std::wstring BuildGpuTooltip(const GpuState& display, const GpuState& render)
     else
         ss << L"Render GPU:  <unknown>\n";
 
-    // If both are known and different, highlight the active renderer.
     if (display.vendor != 0 && render.vendor != 0 && display.vendor != render.vendor)
         ss << L"Active desktop rendering: " << render.name << L"\n";
 
