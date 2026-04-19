@@ -130,8 +130,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Initialize minimal D3D11 device on the best GPU
-    InitD3D(); // silent failure is fine — tray still works
+    // Initialize minimal D3D11 device on the best GPU (silent failure is fine)
+    InitD3D();
 
     // Add tray icon
     NOTIFYICONDATAW nid = {};
