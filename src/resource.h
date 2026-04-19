@@ -1,1 +1,5 @@
-
+#define IDI_ICON_NVIDIA   101
+#define IDI_ICON_AMD      102
+#define IDI_ICON_INTEL    103
+#define IDI_ICON_UNKNOWN  104
+#define IDI_ICON_WARNING  105
