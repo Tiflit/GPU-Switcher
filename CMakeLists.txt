@@ -2,15 +2,15 @@ cmake_minimum_required(VERSION 3.20)
 project(gpu_tray LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ───────────────────────────────────────────────────────────────
-# GPU-Switcher main executable (tray hook)
-# ───────────────────────────────────────────────────────────────
 add_executable(gpu_tray WIN32
     main.cpp
 )
 
-set_target_properties(gpu_tray PROPERTIES OUTPUT_NAME "GPU-Switcher")
+set_target_properties(gpu_tray PROPERTIES
+    OUTPUT_NAME "GPU-Switcher"
+)
 
 target_compile_definitions(gpu_tray PRIVATE
     UNICODE
