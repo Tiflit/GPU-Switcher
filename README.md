@@ -1,61 +1,109 @@
-# Lenovo Legion dGPU Display Switcher
+# GPU‑Switcher
 
-A tiny Windows tray utility for Lenovo Legion / IdeaPad Gaming laptops that support GPU mode switching through Lenovo’s **LENOVO_GAMEZONE_DATA** WMI interface.
+A tiny Windows tray utility that activates your laptop’s discrete GPU (dGPU) on launch and keeps it awake until you exit.
 
-The tool automatically switches the system to **dGPU display mode** on launch, shows a **vendor‑colored tray icon**, and lets you manually switch between **iGPU** and **dGPU** display modes.  
-On exit, it always returns the system to **iGPU display mode**.
-
----
-
-## 🎨 Tray icon meaning
-
-The icon shows the **active display GPU**:
-
-| GPU | Vendor | Icon |
-|-----|--------|------|
-| iGPU | Intel | 🔵 **i** |
-| iGPU | AMD | 🔴 **a** |
-| iGPU | NVIDIA | 🟢 **n** |
-| dGPU | Intel | 🔵 **I** |
-| dGPU | NVIDIA | 🟢 **N** |
-| dGPU | AMD | 🔴 **A** |
-| Unknown | — | ⚫ **?** |
+Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics, Intel + NVIDIA, etc.) where you want the dGPU ready without running a heavy application.
 
 ---
 
-## 🖱️ How to use
+## How it works
 
-After launching the `.exe`, the tool appears in the system tray.
+On startup, GPU‑Switcher:
 
-Right‑click the icon to access:
+1. **Exports GPU driver hints**  
+   - `NvOptimusEnablement`  
+   - `AmdPowerXpressRequestHighPerformance`  
+   These tell the driver to prefer the dGPU for this process.
 
-- **Switch to iGPU display mode**  
-- **Switch to dGPU display mode**  
-- **Exit and switch to iGPU display mode (Vendor dGPU)**  
+2. **Creates a minimal D3D11 device**  
+   The device is created on the adapter with the most dedicated VRAM — always the dGPU on hybrid systems.  
+   This registers the process with the GPU driver and makes it visible in NVIDIA Control Panel / AMD Radeon Software.
 
-Hovering the icon shows the active GPU model.
-
----
-
-## ⚠️ Requirements
-
-- Windows 10 / 11 (64‑bit)  
-- Lenovo Legion or IdeaPad Gaming laptop  
-- Must be run as **Administrator**  
-- System must expose the **LENOVO_GAMEZONE_DATA** WMI class  
-- Any Intel / AMD / NVIDIA iGPU + dGPU combination
-
-> This tool **does not work** on non‑Lenovo laptops.
+3. **Sits quietly in the system tray**  
+   Zero CPU usage. No polling. No background threads.  
+   Exiting the app releases the D3D device and the driver returns to normal routing.
 
 ---
 
-## 📦 No installation needed
+## Tray icon
 
-Just download the `.exe` and run it.  
-The tool is portable and leaves no files behind.
+The icon reflects the detected GPU vendor:
+
+| Vendor | Color |
+|--------|--------|
+| NVIDIA | Green |
+| AMD    | Red   |
+| Intel  | Blue  |
+| Other  | Grey  |
+
+Hovering the icon shows the full GPU name and state, e.g.:
+
+```
+NVIDIA GeForce RTX 4070 [dGPU active]
+```
+
+Right‑click menu:
+
+- **Run at startup** — toggles a `HKCU\...\Run` entry  
+- **Exit** — releases the GPU and removes the tray icon  
 
 ---
 
-## 📜 License
+## Requirements
 
-MIT — free to use, modify, and distribute.
+- Windows 10 or 11 (64‑bit)
+- Any hybrid GPU laptop (NVIDIA, AMD, Intel)
+- D3D11‑capable discrete GPU
+- One‑time “High Performance” profile in NVIDIA Control Panel or AMD Radeon Software
+
+---
+
+## One‑time setup (NVIDIA)
+
+1. Open **NVIDIA Control Panel**  
+2. Go to **Manage 3D settings → Program Settings**  
+3. Add `GPU‑Switcher.exe`  
+4. Set **Preferred graphics processor → High‑performance NVIDIA processor**
+5. Enable Automatic Display Switching (or the AMD equivalent)
+
+After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.  
+(AMD SmartShift / Smart Access Graphics behavior requires additional testing.)
+
+---
+
+## Building
+
+Requires:
+
+- CMake 3.20+
+- Visual Studio / MSVC with Windows SDK
+
+```
+cmake -B build
+cmake --build build --config Release
+```
+
+The resulting binary is self‑contained.
+
+---
+
+## Why not Lenovo WMI / NvAPI?
+
+These were tested extensively:
+
+- Lenovo’s WMI GPU switching varies by BIOS and is unreliable  
+- NvAPI display routing is undocumented and OEM‑dependent  
+
+The D3D11 + driver‑hint approach is:
+
+- stable  
+- universal  
+- vendor‑agnostic  
+- future‑proof  
+- requires no admin rights  
+
+---
+
+## License
+
+MIT
