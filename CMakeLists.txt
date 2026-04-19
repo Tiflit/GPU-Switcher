@@ -5,14 +5,12 @@ project(GPU-Switcher LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# High warning level and strict mode
 add_compile_options(
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
     $<$<CXX_COMPILER_ID:MSVC>:/permissive->
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
 
-# Windows 10+ target
 add_definitions(-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00)
 
 add_executable(GPU-Switcher WIN32
