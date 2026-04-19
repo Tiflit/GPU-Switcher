@@ -1,8 +1,86 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <d3d11.h>
+#include <dxgi.h>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 #define WM_TRAY (WM_USER + 1)
 #define TRAY_ID 1
+
+// GPU vendor hints (NVIDIA Optimus + AMD Dynamic Switchable Graphics)
+extern "C" {
+    __declspec(dllexport) DWORD NvOptimusEnablement = 1;
+    __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
+}
+
+// Only one global needed
+static ID3D11Device* g_d3dDevice = nullptr;
+
+// Pick the adapter with the most dedicated VRAM (universal dGPU selection)
+IDXGIAdapter1* PickBestAdapter(IDXGIFactory1* factory)
+{
+    IDXGIAdapter1* best = nullptr;
+    IDXGIAdapter1* adapter = nullptr;
+    SIZE_T bestMem = 0;
+
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
+    {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(adapter->GetDesc1(&desc)) &&
+            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+            desc.DedicatedVideoMemory > bestMem)
+        {
+            if (best) best->Release();
+            best = adapter;
+            bestMem = desc.DedicatedVideoMemory;
+        }
+        else
+        {
+            adapter->Release();
+        }
+    }
+    return best; // caller must Release()
+}
+
+bool InitD3D()
+{
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)))
+        return false;
+
+    IDXGIAdapter1* adapter = PickBestAdapter(factory);
+    factory->Release();
+
+    if (!adapter)
+        return false;
+
+    // Create a minimal D3D11 device (no context, no swapchain)
+    HRESULT hr = D3D11CreateDevice(
+        adapter,
+        D3D_DRIVER_TYPE_UNKNOWN, // required when passing an adapter
+        nullptr,
+        0,
+        nullptr, 0,
+        D3D11_SDK_VERSION,
+        &g_d3dDevice,
+        nullptr,
+        nullptr
+    );
+
+    adapter->Release();
+    return SUCCEEDED(hr);
+}
+
+void ShutdownD3D()
+{
+    if (g_d3dDevice)
+    {
+        g_d3dDevice->Release();
+        g_d3dDevice = nullptr;
+    }
+}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -36,15 +114,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
-    // Register a tiny hidden window
+    // Register hidden window
     WNDCLASSW wc = {};
-    wc.style         = CS_OWNDC;          // NVIDIA-detectable hint
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
     wc.lpszClassName = L"TrayHookClass";
     RegisterClassW(&wc);
 
-    // Hidden window with a title
     HWND hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         wc.lpszClassName,
@@ -54,14 +130,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // ────────────────────────────────────────────────
-    // Option 3: Create and release a dummy GDI DC
-    // ────────────────────────────────────────────────
-    {
-        HDC hdc = GetDC(hwnd);
-        ReleaseDC(hwnd, hdc);
-    }
-    // This is enough to make NVIDIA detect the process.
+    // Initialize minimal D3D11 device on the best GPU
+    InitD3D(); // silent failure is fine — tray still works
 
     // Add tray icon
     NOTIFYICONDATAW nid = {};
@@ -84,5 +154,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     }
 
     Shell_NotifyIconW(NIM_DELETE, &nid);
+    ShutdownD3D();
     return 0;
 }
