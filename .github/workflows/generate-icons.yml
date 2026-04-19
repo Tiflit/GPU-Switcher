@@ -24,26 +24,28 @@ jobs:
 
       - name: Prepare output folders
         run: |
-          rm -rf icons/png/*
-          rm -rf icons/ico/*
+          rm -rf icons/png
+          rm -rf icons/ico
           mkdir -p icons/png
           mkdir -p icons/ico
 
       - name: Generate PNGs and ICOs
         run: |
+          shopt -s nullglob
           for svg in icons/svg/*.svg; do
             base=$(basename "$svg" .svg)
-
             echo "Processing $base.svg"
 
-            # PNG sizes (Windows + power-of-two)
+            # PNG sizes
             for size in 16 24 32 48 64 128 256; do
               convert -background none "$svg" -resize ${size}x${size} \
                 "icons/png/${base}-${size}.png"
             done
 
             # Optimize PNGs (lossless)
-            optipng -o7 icons/png/${base}-*.png
+            for png in icons/png/${base}-*.png; do
+              optipng -o7 "$png"
+            done
 
             # ICO (Windows-relevant sizes)
             convert \
@@ -51,9 +53,10 @@ jobs:
               icons/png/${base}-24.png \
               icons/png/${base}-32.png \
               icons/png/${base}-48.png \
+              icons/png/${base}-64.png \
+              icons/png/${base}-128.png \
               icons/png/${base}-256.png \
               "icons/ico/${base}.ico"
-
           done
 
       - name: Commit generated icons
