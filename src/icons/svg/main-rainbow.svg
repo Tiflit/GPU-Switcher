@@ -1,27 +1,18 @@
 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" stroke-linecap="round" stroke-linejoin="round">
   <defs>
-    <filter id="a" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="linearRGB">
-      <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#fff" flood-opacity=".45"/>
-      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#fff" flood-opacity=".18"/>
-    </filter>
-    <filter id="c" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="linearRGB">
-      <feGaussianBlur in="SourceAlpha" stdDeviation=".35" result="blur"/>
-      <feComposite in="blur" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="edge"/>
-      <feColorMatrix in="edge" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.22 0"/>
-      <feComposite in="SourceGraphic" in2="edge"/>
-    </filter>
-    <linearGradient id="b" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ff3a3a"/>
-      <stop offset="20%" stop-color="#ff7a00"/>
-      <stop offset="40%" stop-color="#fe0"/>
-      <stop offset="60%" stop-color="#00ff4c"/>
-      <stop offset="80%" stop-color="#00c1ff"/>
-      <stop offset="100%" stop-color="#b400ff"/>
+    <linearGradient id="neonRainbowV2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#FF2A2A"/>
+      <stop offset="20%"  stop-color="#FF8A1A"/>
+      <stop offset="40%"  stop-color="#FFF12A"/>
+      <stop offset="60%"  stop-color="#2FFF4A"/>
+      <stop offset="80%"  stop-color="#28CFFF"/>
+      <stop offset="100%" stop-color="#D04CFF"/>
     </linearGradient>
   </defs>
-  <g transform="rotate(45 -8.485 20.485)" filter="url(#a)">
-    <rect x="-7" y="-7" width="14" height="14" rx="2" fill="#0f0f0f" stroke="url(#b)" stroke-width="1.1"/>
-    <path stroke="url(#b)" stroke-width=".9" d="M-5.4-2.2H5.4M-5.4 2.2H5.4"/>
-    <rect x="-3.5" y="-3.5" width="7" height="7" rx="1.2" fill="url(#b)" stroke="#fff" stroke-opacity=".55" stroke-width=".9" filter="url(#c)"/>
+
+  <g transform="rotate(45 -8.485 20.485)" stroke="url(#neonRainbowV2)">
+    <rect x="-7" y="-7" width="14" height="14" rx="2" fill="#0f0f0f" stroke-width="1.1"/>
+    <path stroke-width=".9" d="M-5.4-2.2H5.4 M-5.4 2.2H5.4"/>
+    <rect x="-3.5" y="-3.5" width="7" height="7" rx="1.2" fill="#d8d8d8" stroke-width=".9"/>
   </g>
 </svg>
