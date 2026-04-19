@@ -7,27 +7,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # High warning level and strict mode
 add_compile_options(
-    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /utf-8>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
 
 # Windows 10+ target
 add_definitions(-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00)
 
-# Sources
 add_executable(GPU-Switcher WIN32
     src/main.cpp
     src/resource.rc
 )
 
-# Ensure the final exe is GPU-Switcher.exe
 set_target_properties(GPU-Switcher PROPERTIES
     OUTPUT_NAME "GPU-Switcher"
 )
 
-# So #include "resource.h" works from src/
-target_include_directories(GPU-Switcher PRIVATE
-    src
-)
+target_include_directories(GPU-Switcher PRIVATE src)
 
 target_compile_definitions(GPU-Switcher PRIVATE
     UNICODE
