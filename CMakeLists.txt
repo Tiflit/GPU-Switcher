@@ -20,10 +20,14 @@ add_executable(GPU-Switcher WIN32
     src/resource.rc
 
     src/gpu/gpu_detection.cpp
+    src/gpu/gpu_render_probe.cpp
+
     src/tray/tray_icon.cpp
     src/tray/tray_menu.cpp
+
     src/util/logging.cpp
     src/util/startup.cpp
+
     src/win/win_helpers.cpp
 )
 
