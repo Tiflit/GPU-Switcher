@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.h>
+#include "gpu/gpu_state.h"
 
 // Tray constants
 constexpr UINT WM_TRAY = WM_USER + 1;
@@ -11,10 +12,12 @@ constexpr UINT ID_EXIT               = 1002;
 constexpr UINT ID_TOGGLE_RENDER_GPU  = 2001;
 constexpr UINT ID_RESTART_GPU_DRIVER = 2002;
 
-// Provided by main.cpp
-extern bool g_forceRenderGpu;
+// Globals from main.cpp
+extern GpuState g_displayGpuState;
+extern GpuState g_renderGpuState;
+extern bool     g_forceRenderGpu;
 
-// Provided by main.cpp
+// Refresh function from main.cpp
 void RefreshGpuState(HWND hwnd);
 
 // Window procedure
