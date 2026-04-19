@@ -2,29 +2,31 @@
 
 # GPU‑Switcher
 
-A tiny Windows tray utility meant for hybrid systems to activate the discrete GPU (dGPU) on launch and keep it alive. I needed a simple way to force dGPU display rendering without any performance impact on my laptops. This should allow low-latency streaming for games and a quick toggle to test and run apps on either the iGPU or dGPU for dual-graphics laptops (or any PC, really) that are difficult to manage.
+A tiny Windows tray utility that activates the discrete GPU (dGPU) on launch and keeps it alive. I needed a simple way to force dGPU display rendering without any performance impact on my laptops. This should allow low-latency remote control for games and a quick toggle to test and run apps on either the iGPU or dGPU for dual-graphics laptops (or any PC, really) that are sometimes difficult to manage.
 
-Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics, Intel + NVIDIA, etc.) where you want the dGPU ready without running a heavy application or if you don't want to manually configure every app through the driver control panel.
+I also included some functionality with a right-click menu and basic error logging.
+
+Designed for hybrid GPU systems with NVIDIA **Advanced Optimus** where you want the dGPU ready without running a heavy application or if you don't want to manually configure every app through the driver's control panel.
 
 ---
 
 ## Requirements
 
 - Windows 10 or 11 (64‑bit)
-- Any hybrid GPU laptop (NVIDIA, AMD, Intel)
+- An Advanced Optimus capable system, or any system with a MUX switch that also supports on-the-fly dGPU display switching
 - D3D11‑capable discrete GPU
-- One‑time “High Performance” profile in NVIDIA Control Panel or AMD Radeon Software
+- One‑time setup of the “High Performance” profile in NVIDIA Control Panel
 
 ---
 
-## One‑time setup (NVIDIA)
+## One‑time setup
 
 1. Run GPU-Switcher.exe
-2. Open **NVIDIA Control Panel**  
+2. Open **NVIDIA Control Panel**
 3. Go to **Manage 3D settings → Program Settings**  
 4. Add `GPU‑Switcher.exe`  
 5. Set **Preferred graphics processor → High‑performance NVIDIA processor**
-6. Enable Automatic Display Switching (or the AMD equivalent)
+6. Enable Automatic Display Switching
 7. Exit and restart GPU-Switcher.exe
 
 After this, GPU‑Switcher should consistently trigger a dGPU display switch on laptops with Advanced Optimus enabled.
@@ -42,7 +44,7 @@ On startup, GPU‑Switcher:
 
 2. **Creates a minimal D3D11 device**  
    The device is created on the adapter with the most dedicated VRAM — always the dGPU on hybrid systems.  
-   This registers the process with the GPU driver and makes it visible in NVIDIA Control Panel / AMD Radeon Software.
+   This registers the process with the GPU driver and makes it visible in NVIDIA Control Panel.
 
 3. **Sits quietly in the system tray**  
    Zero CPU usage. No polling. No background threads.  
