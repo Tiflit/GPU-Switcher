@@ -32,7 +32,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
     case WM_DEVICECHANGE:
     case WM_POWERBROADCAST:
-        // Event-driven refresh: no polling, no timers
         RefreshGpuState(hwnd);
         return 0;
 
