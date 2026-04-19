@@ -7,10 +7,10 @@
 constexpr UINT WM_TRAY = WM_USER + 1;
 constexpr UINT TRAY_ID = 1;
 
-constexpr UINT ID_RUN_AT_STARTUP       = 1001;
-constexpr UINT ID_EXIT                 = 1002;
-constexpr UINT ID_ENABLE_DGPU_RENDER   = 2001;
-constexpr UINT ID_RESTART_GPU_DRIVER   = 2002;
+constexpr UINT ID_RUN_AT_STARTUP     = 1001;
+constexpr UINT ID_EXIT               = 1002;
+constexpr UINT ID_ENABLE_DGPU_RENDER = 2001;
+constexpr UINT ID_RESTART_GPU_DRIVER = 2002;
 
 // Globals from main.cpp
 extern GpuState g_displayGpuState;
