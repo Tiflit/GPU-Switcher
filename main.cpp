@@ -2,7 +2,10 @@
 #include <shellapi.h>
 #include <d3d11.h>
 #include <dxgi.h>
-#include "resource.h" // shared with .rc
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include "resource.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -19,11 +22,51 @@ extern "C" {
 }
 
 static ID3D11Device* g_d3dDevice = nullptr;
-static wchar_t g_gpuName[128] = L"GPU Tray Hook";
-static UINT g_gpuVendorId = 0;
+static wchar_t g_renderGpuName[128] = L"Unknown GPU";
+static wchar_t g_displayGpuName[128] = L"Unknown GPU";
+static UINT g_renderVendor = 0;
+static UINT g_displayVendor = 0;
 static HINSTANCE g_hInst = nullptr;
-static HICON g_currentIcon = nullptr;   // resource icons must NOT be destroyed
-static bool g_iconIsOwned = false;      // always false for resource icons
+static HICON g_currentIcon = nullptr;
+static bool g_iconIsOwned = false;
+
+// ───────────────────────────────────────────────────────────────
+// Logging (errors only, capped at ~10 KB)
+// ───────────────────────────────────────────────────────────────
+void LogError(const std::wstring& msg)
+{
+    const wchar_t* logFile = L"gpu_switcher.log";
+
+    // Read existing log
+    std::wifstream in(logFile);
+    std::wstringstream buffer;
+    buffer << in.rdbuf();
+    in.close();
+
+    std::wstring existing = buffer.str();
+
+    // Append new entry
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t timestamp[64];
+    swprintf_s(timestamp, L"[%04d-%02d-%02d %02d:%02d:%02d] ",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+    existing += timestamp;
+    existing += msg + L"\n";
+
+    // Trim if > 10 KB
+    const size_t MAX_SIZE = 10 * 1024;
+    if (existing.size() > MAX_SIZE)
+    {
+        // Keep last half
+        existing = existing.substr(existing.size() - MAX_SIZE / 2);
+    }
+
+    // Write back
+    std::wofstream out(logFile, std::ios::trunc);
+    out << existing;
+}
 
 // ───────────────────────────────────────────────────────────────
 // Startup registration
@@ -75,30 +118,44 @@ void SetStartup(bool enable)
 }
 
 // ───────────────────────────────────────────────────────────────
-// Icon selection based on GPU vendor
+// Detect display GPU (adapter driving the primary output)
 // ───────────────────────────────────────────────────────────────
-HICON LoadVendorIcon()
+bool DetectDisplayGPU()
 {
-    HICON icon = nullptr;
-
-    switch (g_gpuVendorId)
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)))
     {
-    case 0x10DE: icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_NVIDIA)); break;
-    case 0x1002: icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_AMD));    break;
-    case 0x8086: icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));  break;
-    default:     icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_GENERIC)); break;
+        LogError(L"Failed to create DXGI factory for display GPU detection.");
+        return false;
     }
 
-    // Last‑resort fallback (should never happen)
-    if (!icon)
-        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
+    {
+        IDXGIOutput* output = nullptr;
+        if (adapter->EnumOutputs(0, &output) == S_OK)
+        {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
 
-    g_iconIsOwned = false; // resource icons must NOT be destroyed
-    return icon;
+            wcsncpy_s(g_displayGpuName, desc.Description, _TRUNCATE);
+            g_displayVendor = desc.VendorId;
+
+            output->Release();
+            adapter->Release();
+            factory->Release();
+            return true;
+        }
+        adapter->Release();
+    }
+
+    factory->Release();
+    LogError(L"No display GPU detected.");
+    return false;
 }
 
 // ───────────────────────────────────────────────────────────────
-// GPU selection (highest VRAM)
+// Detect rendering GPU (highest VRAM)
 // ───────────────────────────────────────────────────────────────
 IDXGIAdapter1* PickBestAdapter(IDXGIFactory1* factory)
 {
@@ -129,13 +186,19 @@ bool InitD3D()
 {
     IDXGIFactory1* factory = nullptr;
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)))
+    {
+        LogError(L"Failed to create DXGI factory for D3D init.");
         return false;
+    }
 
     IDXGIAdapter1* adapter = PickBestAdapter(factory);
     factory->Release();
 
     if (!adapter)
+    {
+        LogError(L"No suitable GPU adapter found.");
         return false;
+    }
 
     HRESULT hr = D3D11CreateDevice(
         adapter,
@@ -152,24 +215,51 @@ bool InitD3D()
     if (SUCCEEDED(hr))
     {
         DXGI_ADAPTER_DESC1 desc;
-        if (SUCCEEDED(adapter->GetDesc1(&desc)))
-        {
-            wcsncpy_s(g_gpuName, desc.Description, _TRUNCATE);
-            g_gpuVendorId = desc.VendorId;
-        }
+        adapter->GetDesc1(&desc);
+
+        wcsncpy_s(g_renderGpuName, desc.Description, _TRUNCATE);
+        g_renderVendor = desc.VendorId;
+    }
+    else
+    {
+        LogError(L"D3D11CreateDevice failed.");
     }
 
     adapter->Release();
     return SUCCEEDED(hr);
 }
 
-void ShutdownD3D()
+// ───────────────────────────────────────────────────────────────
+// Icon selection (dual-layer combinations)
+// ───────────────────────────────────────────────────────────────
+HICON LoadDualIcon(UINT displayVendor, UINT renderVendor)
 {
-    if (g_d3dDevice)
+    int index = 0;
+
+    auto vendorIndex = [](UINT v) {
+        switch (v)
+        {
+        case 0x8086: return 0; // Intel
+        case 0x10DE: return 1; // NVIDIA
+        case 0x1002: return 2; // AMD
+        default:     return 3; // Unknown
+        }
+    };
+
+    int d = vendorIndex(displayVendor);
+    int r = vendorIndex(renderVendor);
+
+    index = d * 4 + r; // 16 combinations
+
+    HICON icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(3000 + index));
+    if (!icon)
     {
-        g_d3dDevice->Release();
-        g_d3dDevice = nullptr;
+        LogError(L"Failed to load icon for GPU combination.");
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
     }
+
+    g_iconIsOwned = false;
+    return icon;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -187,6 +277,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             bool startup = IsStartupEnabled();
             AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0),
                         ID_RUN_AT_STARTUP, L"Run at startup");
+
+            // Error info
+            if (g_displayVendor == 0 || g_renderVendor == 0)
+                AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, L"⚠ GPU detection error");
+
             AppendMenuW(menu, MF_STRING, ID_EXIT, L"Exit");
 
             POINT pt;
@@ -246,12 +341,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Initialize GPU device (and vendor/name)
+    // Detect GPUs
+    DetectDisplayGPU();
     InitD3D();
 
-    // Add tray icon
-    g_currentIcon = LoadVendorIcon();
+    // Load icon
+    g_currentIcon = LoadDualIcon(g_displayVendor, g_renderVendor);
 
+    // Add tray icon
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = hwnd;
@@ -260,9 +357,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_currentIcon;
 
-    wchar_t tip[128];
-    swprintf_s(tip, L"%s [%s]", g_gpuName,
-               g_d3dDevice ? L"dGPU active" : L"iGPU");
+    wchar_t tip[256];
+    swprintf_s(tip,
+        L"Display: %s\nRendering: %s [%s]",
+        g_displayGpuName,
+        g_renderGpuName,
+        g_d3dDevice ? L"dGPU active" : L"iGPU");
+
     wcsncpy_s(nid.szTip, tip, _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
