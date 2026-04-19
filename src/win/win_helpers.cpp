@@ -9,7 +9,7 @@ extern GpuState g_renderGpuState;
 extern bool     g_enableDgpuRendering;
 
 // Registry path for settings
-static const wchar_t* kRegPath = L"Software\\GPU-Switcher";
+static const wchar_t* kRegPath      = L"Software\\GPU-Switcher";
 static const wchar_t* kRegValueDgpu = L"EnableDgpuRendering";
 
 bool IsDgpuRenderingEnabled()
@@ -89,9 +89,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
     case WM_DEVICECHANGE:
     case WM_POWERBROADCAST:
-        // Respect current setting after system/GPU changes
         if (g_enableDgpuRendering)
+        {
             ActivateRenderGPU();
+            Sleep(150);
+        }
         RefreshGpuState(hwnd);
         return 0;
 
@@ -156,7 +158,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             case ID_RESTART_GPU_DRIVER:
             {
                 RestartGpuDriver();
-                Sleep(500); // allow driver reset
+                Sleep(500);
 
                 if (g_enableDgpuRendering)
                 {
