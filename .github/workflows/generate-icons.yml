@@ -14,11 +14,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install ImageMagick
-        run: sudo apt-get update && sudo apt-get install -y imagemagick
-
-      - name: Create output folders
+      - name: Install ImageMagick + PNG optimizer
         run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick optipng
+
+          # Allow ImageMagick to read SVGs (Ubuntu blocks this by default)
+          sudo sed -i 's/disable="read" pattern="SVG"/pattern="SVG"/' /etc/ImageMagick-6/policy.xml
+
+      - name: Prepare output folders
+        run: |
+          rm -rf icons/png/*
+          rm -rf icons/ico/*
           mkdir -p icons/png
           mkdir -p icons/ico
 
@@ -27,10 +34,16 @@ jobs:
           for svg in icons/svg/*.svg; do
             base=$(basename "$svg" .svg)
 
-            # PNG sizes
+            echo "Processing $base.svg"
+
+            # PNG sizes (Windows + power-of-two)
             for size in 16 24 32 48 64 128 256; do
-              convert -background none "$svg" -resize ${size}x${size} "icons/png/${base}-${size}.png"
+              convert -background none "$svg" -resize ${size}x${size} \
+                "icons/png/${base}-${size}.png"
             done
+
+            # Optimize PNGs (lossless)
+            optipng -o7 icons/png/${base}-*.png
 
             # ICO (Windows-relevant sizes)
             convert \
@@ -38,10 +51,9 @@ jobs:
               icons/png/${base}-24.png \
               icons/png/${base}-32.png \
               icons/png/${base}-48.png \
-              icons/png/${base}-64.png \
-              icons/png/${base}-128.png \
               icons/png/${base}-256.png \
               "icons/ico/${base}.ico"
+
           done
 
       - name: Commit generated icons
