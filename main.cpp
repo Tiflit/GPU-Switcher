@@ -8,6 +8,14 @@
 
 #define WM_TRAY (WM_USER + 1)
 #define TRAY_ID 1
+#define ID_RUN_AT_STARTUP 1001
+#define ID_EXIT 1002
+
+// Resource IDs (defined in resource.h / .rc)
+#define IDI_ICON_GENERIC  2001
+#define IDI_ICON_NVIDIA   2002
+#define IDI_ICON_AMD      2003
+#define IDI_ICON_INTEL    2004
 
 // GPU vendor hints (NVIDIA Optimus + AMD Dynamic Switchable Graphics)
 extern "C" {
@@ -15,10 +23,76 @@ extern "C" {
     __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 }
 
-// Only one global needed
 static ID3D11Device* g_d3dDevice = nullptr;
+static wchar_t g_gpuName[128] = L"GPU Tray Hook";
+static UINT g_gpuVendorId = 0;
+static HINSTANCE g_hInst = nullptr;
 
-// Pick the adapter with the most dedicated VRAM (universal dGPU selection)
+// ───────────────────────────────────────────────────────────────
+// Startup registration
+// ───────────────────────────────────────────────────────────────
+bool IsStartupEnabled()
+{
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, KEY_READ, &key) != ERROR_SUCCESS)
+        return false;
+
+    wchar_t path[MAX_PATH];
+    DWORD size = sizeof(path);
+    bool exists = (RegQueryValueExW(key, L"GPUSwitcher", nullptr, nullptr,
+        (BYTE*)path, &size) == ERROR_SUCCESS);
+
+    RegCloseKey(key);
+    return exists;
+}
+
+void SetStartup(bool enable)
+{
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+        return;
+
+    if (enable)
+    {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        RegSetValueExW(key, L"GPUSwitcher", 0, REG_SZ,
+            (BYTE*)exePath, (DWORD)((wcslen(exePath) + 1) * sizeof(wchar_t)));
+    }
+    else
+    {
+        RegDeleteValueW(key, L"GPUSwitcher");
+    }
+
+    RegCloseKey(key);
+}
+
+// ───────────────────────────────────────────────────────────────
+// Icon selection based on GPU vendor
+// ───────────────────────────────────────────────────────────────
+HICON LoadVendorIcon()
+{
+    UINT v = g_gpuVendorId;
+
+    if (v == 0x10DE) // NVIDIA
+        return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_NVIDIA));
+
+    if (v == 0x1002) // AMD
+        return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_AMD));
+
+    if (v == 0x8086) // Intel
+        return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));
+
+    return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_GENERIC));
+}
+
+// ───────────────────────────────────────────────────────────────
+// GPU selection (highest VRAM)
+// ───────────────────────────────────────────────────────────────
 IDXGIAdapter1* PickBestAdapter(IDXGIFactory1* factory)
 {
     IDXGIAdapter1* best = nullptr;
@@ -41,7 +115,7 @@ IDXGIAdapter1* PickBestAdapter(IDXGIFactory1* factory)
             adapter->Release();
         }
     }
-    return best; // caller must Release()
+    return best;
 }
 
 bool InitD3D()
@@ -56,10 +130,9 @@ bool InitD3D()
     if (!adapter)
         return false;
 
-    // Create a minimal D3D11 device (no context, no swapchain)
     HRESULT hr = D3D11CreateDevice(
         adapter,
-        D3D_DRIVER_TYPE_UNKNOWN, // required when passing an adapter
+        D3D_DRIVER_TYPE_UNKNOWN,
         nullptr,
         0,
         nullptr, 0,
@@ -68,6 +141,16 @@ bool InitD3D()
         nullptr,
         nullptr
     );
+
+    if (SUCCEEDED(hr))
+    {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(adapter->GetDesc1(&desc)))
+        {
+            wcsncpy_s(g_gpuName, desc.Description, _TRUNCATE);
+            g_gpuVendorId = desc.VendorId;
+        }
+    }
 
     adapter->Release();
     return SUCCEEDED(hr);
@@ -82,42 +165,68 @@ void ShutdownD3D()
     }
 }
 
+// ───────────────────────────────────────────────────────────────
+// Window procedure
+// ───────────────────────────────────────────────────────────────
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (msg == WM_TRAY)
+    switch (msg)
     {
+    case WM_TRAY:
         if (LOWORD(lParam) == WM_RBUTTONUP)
         {
             HMENU menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, 1, L"Exit");
+
+            bool startup = IsStartupEnabled();
+            AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0),
+                        ID_RUN_AT_STARTUP, L"Run at startup");
+            AppendMenuW(menu, MF_STRING, ID_EXIT, L"Exit");
 
             POINT pt;
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd);
 
-            int cmd = TrackPopupMenu(
-                menu,
+            int cmd = TrackPopupMenu(menu,
                 TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                pt.x, pt.y, 0, hwnd, nullptr
-            );
+                pt.x, pt.y, 0, hwnd, nullptr);
 
             DestroyMenu(menu);
 
-            if (cmd == 1)
+            if (cmd == ID_RUN_AT_STARTUP)
+                SetStartup(!startup);
+
+            if (cmd == ID_EXIT)
                 PostQuitMessage(0);
         }
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
         return 0;
     }
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+// ───────────────────────────────────────────────────────────────
+// Entry point
+// ───────────────────────────────────────────────────────────────
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
+    g_hInst = hInst;
+
+    // Single-instance guard
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"GPUSwitcherMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        CloseHandle(hMutex);
+        return 0;
+    }
+
     // Register hidden window
     WNDCLASSW wc = {};
-    wc.lpfnWndProc   = WndProc;
-    wc.hInstance     = hInst;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
     wc.lpszClassName = L"TrayHookClass";
     RegisterClassW(&wc);
 
@@ -130,7 +239,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Initialize minimal D3D11 device on the best GPU (silent failure is fine)
+    // Initialize GPU device (and vendor/name)
     InitD3D();
 
     // Add tray icon
@@ -140,8 +249,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     nid.uID = TRAY_ID;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(nid.szTip, L"GPU Tray Hook");
+    nid.hIcon = LoadVendorIcon();
+    wcsncpy_s(nid.szTip, g_gpuName, _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -155,5 +264,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     Shell_NotifyIconW(NIM_DELETE, &nid);
     ShutdownD3D();
+    CloseHandle(hMutex);
     return 0;
 }
