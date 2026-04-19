@@ -1,0 +1,18 @@
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="1" y="1" width="22" height="22" rx="5" fill="#0a0a0a"/>
+  <filter id="a" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="linearRGB">
+    <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#a0a0a0" flood-opacity=".75"/>
+    <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#a0a0a0" flood-opacity=".28"/>
+  </filter>
+  <filter id="b" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="linearRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation=".35" result="b"/>
+    <feComposite in="b" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="i"/>
+    <feColorMatrix in="i" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.22 0"/>
+    <feComposite in="SourceGraphic" in2="i"/>
+  </filter>
+  <g transform="rotate(45 -8.485 20.485)" filter="url(#a)">
+    <rect x="-7" y="-7" width="14" height="14" rx="2" fill="#121212" stroke="#a0a0a0" stroke-width="1.1"/>
+    <path stroke="#a0a0a0" stroke-width=".9" d="M-5.4-2.2H5.4M-5.4 2.2H5.4"/>
+    <rect x="-3.5" y="-3.5" width="7" height="7" rx="1.2" fill="#a0a0a0" stroke="#e0e0e0" stroke-width=".9" filter="url(#b)"/>
+  </g>
+</svg>
