@@ -98,33 +98,6 @@ HICON LoadVendorIcon()
 }
 
 // ───────────────────────────────────────────────────────────────
-// Tray icon update helper
-// ───────────────────────────────────────────────────────────────
-void UpdateTrayIcon(HWND hwnd, HICON newIcon)
-{
-    NOTIFYICONDATAW nid = {};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd = hwnd;
-    nid.uID = TRAY_ID;
-    nid.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP;
-    nid.hIcon = newIcon;
-
-    wchar_t tip[128];
-    swprintf_s(tip, L"%s [%s]", g_gpuName,
-               g_d3dDevice ? L"dGPU active" : L"iGPU");
-    wcsncpy_s(nid.szTip, tip, _TRUNCATE);
-
-    Shell_NotifyIconW(NIM_MODIFY, &nid);
-
-    // Only destroy icons we created manually (none in this version)
-    if (g_iconIsOwned && g_currentIcon)
-        DestroyIcon(g_currentIcon);
-
-    g_currentIcon = newIcon;
-    g_iconIsOwned = false;
-}
-
-// ───────────────────────────────────────────────────────────────
 // GPU selection (highest VRAM)
 // ───────────────────────────────────────────────────────────────
 IDXGIAdapter1* PickBestAdapter(IDXGIFactory1* factory)
