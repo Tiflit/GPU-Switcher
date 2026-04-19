@@ -17,6 +17,7 @@ extern "C" {
 
 // Global GPU state (used by win_helpers.cpp)
 GpuState g_displayGpuState;
+GpuState g_renderGpuState;
 
 HINSTANCE g_hInst = nullptr;
 
@@ -48,11 +49,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Detect GPU
+    // Detect GPUs
     DetectDisplayGPU(g_displayGpuState);
+    DetectRenderGPU(g_renderGpuState);
 
-    // Load icon
-    HICON icon = LoadDisplayIcon(g_displayGpuState.vendor, g_hInst);
+    // Choose active GPU for icon: prefer render GPU, fallback to display GPU
+    UINT activeVendor = (g_renderGpuState.vendor != 0)
+                        ? g_renderGpuState.vendor
+                        : g_displayGpuState.vendor;
+
+    HICON icon = LoadDisplayIcon(activeVendor, g_hInst);
+
+    // Build tooltip with both GPUs
+    std::wstring tip = BuildGpuTooltip(g_displayGpuState, g_renderGpuState);
 
     // Add tray icon
     NOTIFYICONDATAW nid = {};
@@ -63,7 +72,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon            = icon;
 
-    swprintf_s(nid.szTip, L"Display GPU: %s", g_displayGpuState.name.c_str());
+    wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
