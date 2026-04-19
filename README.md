@@ -1,8 +1,8 @@
 # GPU‑Switcher
 
-A tiny Windows tray utility that activates your laptop’s discrete GPU (dGPU) on launch and keeps it awake until you exit.
+A tiny Windows tray utility that activates the laptop’s (or any PC, really) discrete GPU (dGPU) on launch and keeps it awake until exit. I needed an easy way to force dGPU display rendering without performance impact. This should allow low-latency streaming for games and a quick toggle to test and run apps on either the iGPU or dGPU for dual-graphics laptops that are difficult to manage.
 
-Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics, Intel + NVIDIA, etc.) where you want the dGPU ready without running a heavy application.
+Designed for hybrid GPU systems (NVIDIA Optimus, AMD Dynamic Switchable Graphics, Intel + NVIDIA, etc.) where you want the dGPU ready without running a heavy application or if you don't want to manually configure every app through the driver control panels.
 
 ---
 
