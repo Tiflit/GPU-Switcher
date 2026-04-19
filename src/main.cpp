@@ -15,23 +15,25 @@ extern "C" {
     __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 }
 
-// Global GPU states
+// Global GPU state
 GpuState g_displayGpuState;
 GpuState g_renderGpuState;
+bool     g_forceRenderGpu = true;
 
-bool g_forceRenderGpu = true;   // User toggle
 HINSTANCE g_hInst = nullptr;
 
 void RefreshGpuState(HWND hwnd)
 {
+    // Display GPU
     DetectDisplayGPU(g_displayGpuState);
 
+    // Render GPU (optional)
     if (g_forceRenderGpu)
         DetectRenderGPU(g_renderGpuState);
     else
-        g_renderGpuState = {}; // Clear render GPU
+        g_renderGpuState = {};
 
-    // Choose active GPU
+    // Choose active GPU for icon
     UINT activeVendor = (g_renderGpuState.vendor != 0)
                         ? g_renderGpuState.vendor
                         : g_displayGpuState.vendor;
@@ -62,7 +64,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 0;
     }
 
-    // Register hidden window
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
@@ -78,21 +79,30 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Add tray icon (temporary)
+    // Initial detection
+    DetectDisplayGPU(g_displayGpuState);
+    DetectRenderGPU(g_renderGpuState);
+
+    UINT activeVendor = (g_renderGpuState.vendor != 0)
+                        ? g_renderGpuState.vendor
+                        : g_displayGpuState.vendor;
+
+    HICON icon = LoadDisplayIcon(activeVendor, g_hInst);
+
+    std::wstring tip = BuildGpuTooltip(g_displayGpuState, g_renderGpuState);
+
+    // Add tray icon once
     NOTIFYICONDATAW nid = {};
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = hwnd;
     nid.uID              = TRAY_ID;
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon            = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(nid.szTip, L"Initializing GPU detection...");
+    nid.hIcon            = icon;
+    wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
+
     Shell_NotifyIconW(NIM_ADD, &nid);
 
-    // Delay detection by 1 second
-    SetTimer(hwnd, 1, 1000, nullptr);
-
-    // Message loop
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0))
     {
