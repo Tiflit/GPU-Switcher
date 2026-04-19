@@ -24,16 +24,13 @@ HINSTANCE g_hInst = nullptr;
 
 void RefreshGpuState(HWND hwnd)
 {
-    // Display GPU
     DetectDisplayGPU(g_displayGpuState);
 
-    // Render GPU (optional)
     if (g_forceRenderGpu)
         DetectRenderGPU(g_renderGpuState);
     else
         g_renderGpuState = {};
 
-    // Choose active GPU for icon
     UINT activeVendor = (g_renderGpuState.vendor != 0)
                         ? g_renderGpuState.vendor
                         : g_displayGpuState.vendor;
@@ -88,10 +85,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
                         : g_displayGpuState.vendor;
 
     HICON icon = LoadDisplayIcon(activeVendor, g_hInst);
-
     std::wstring tip = BuildGpuTooltip(g_displayGpuState, g_renderGpuState);
 
-    // Add tray icon once
     NOTIFYICONDATAW nid = {};
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = hwnd;
