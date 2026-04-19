@@ -21,13 +21,14 @@ jobs:
 
       - name: Prepare output folders
         run: |
-          rm -rf icons/png
-          rm -rf icons/ico
-          mkdir -p icons/png
-          mkdir -p icons/ico
+          rm -rf src/icons/png
+          rm -rf src/icons/ico
+          mkdir -p src/icons/png
+          mkdir -p src/icons/ico
 
       - name: Generate PNGs and ICOs
         run: |
+          set -e
           shopt -s nullglob
           for svg in src/icons/svg/*.svg; do
             base=$(basename "$svg" .svg)
@@ -35,28 +36,33 @@ jobs:
 
             # PNG sizes
             for size in 16 24 32 48 64 128 256; do
-              rsvg-convert -w ${size} -h ${size} "$svg" -o "icons/png/${base}-${size}.png"
+              rsvg-convert -w ${size} -h ${size} "$svg" -o "src/icons/png/${base}-${size}.png"
             done
 
             # Optimize PNGs (lossless)
-            for png in icons/png/${base}-*.png; do
+            for png in src/icons/png/${base}-*.png; do
               optipng -o7 "$png"
             done
 
             # ICO (Windows-relevant sizes)
             convert \
-              icons/png/${base}-16.png \
-              icons/png/${base}-24.png \
-              icons/png/${base}-32.png \
-              icons/png/${base}-48.png \
-              icons/png/${base}-64.png \
-              icons/png/${base}-128.png \
-              icons/png/${base}-256.png \
-              "icons/ico/${base}.ico"
+              src/icons/png/${base}-16.png \
+              src/icons/png/${base}-24.png \
+              src/icons/png/${base}-32.png \
+              src/icons/png/${base}-48.png \
+              src/icons/png/${base}-64.png \
+              src/icons/png/${base}-128.png \
+              src/icons/png/${base}-256.png \
+              "src/icons/ico/${base}.ico"
           done
+
+      - name: List generated icons (debug)
+        run: |
+          echo "=== src/icons tree ==="
+          ls -R src/icons || true
 
       - name: Commit generated icons
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Auto-generate PNG and ICO icons"
-          file_pattern: icons/png/* icons/ico/*
+          file_pattern: src/icons/png/* src/icons/ico/*
