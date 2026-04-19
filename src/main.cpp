@@ -3,6 +3,7 @@
 #include <dxgi.h>
 #include <fstream>
 #include <sstream>
+#include <filesystem>
 #include "resource.h"
 
 #pragma comment(lib, "dxgi.lib")
@@ -18,10 +19,10 @@ extern "C" {
     __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 }
 
-static wchar_t g_displayGpuName[128] = L"Unknown GPU";
-static UINT    g_displayVendor      = 0;
-static HINSTANCE g_hInst            = nullptr;
-static HICON     g_currentIcon      = nullptr;
+static wchar_t   g_displayGpuName[128] = L"Unknown GPU";
+static UINT      g_displayVendor       = 0;
+static HINSTANCE g_hInst               = nullptr;
+static HICON     g_currentIcon         = nullptr;
 
 // ───────────────────────────────────────────────────────────────
 // Logging (errors only, capped at ~10 KB)
@@ -30,30 +31,44 @@ void LogError(const std::wstring& msg)
 {
     const wchar_t* logFile = L"gpu_switcher.log";
 
-    std::wifstream in(logFile);
-    std::wstringstream buffer;
-    buffer << in.rdbuf();
-    in.close();
-
-    std::wstring existing = buffer.str();
-
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    wchar_t timestamp[64];
-    swprintf_s(timestamp, L"[%04d-%02d-%02d %02d:%02d:%02d] ",
-        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-
-    existing += timestamp;
-    existing += msg + L"\n";
-
-    const size_t MAX_SIZE = 10 * 1024;
-    if (existing.size() > MAX_SIZE)
+    // Append new entry
     {
-        existing = existing.substr(existing.size() - MAX_SIZE / 2);
+        std::wofstream out(logFile, std::ios::app);
+        if (!out.is_open())
+            return;
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wchar_t timestamp[64];
+        swprintf_s(timestamp, L"[%04d-%02d-%02d %02d:%02d:%02d] ",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+        out << timestamp << msg << L"\n";
     }
 
+    // Truncate if file grows too large
+    const std::uintmax_t MAX_SIZE = 10 * 1024; // ~10 KB
+    std::error_code ec;
+    auto size = std::filesystem::file_size(logFile, ec);
+    if (ec || size <= MAX_SIZE)
+        return;
+
+    // Keep the last half
+    std::wifstream in(logFile);
+    if (!in.is_open())
+        return;
+
+    std::wstring content((std::istreambuf_iterator<wchar_t>(in)),
+                         std::istreambuf_iterator<wchar_t>());
+
+    if (content.size() > MAX_SIZE / 2)
+        content = content.substr(content.size() - MAX_SIZE / 2);
+
     std::wofstream out(logFile, std::ios::trunc);
-    out << existing;
+    if (!out.is_open())
+        return;
+
+    out << content;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -147,14 +162,13 @@ bool DetectDisplayGPU()
 // ───────────────────────────────────────────────────────────────
 HICON LoadDisplayIcon(UINT displayVendor)
 {
-    UINT vendor = displayVendor;
-    if (vendor == 0)
+    if (displayVendor == 0)
     {
         // Detection failed → warning icon
         return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_WARNING));
     }
 
-    switch (vendor)
+    switch (displayVendor)
     {
     case 0x8086: // Intel
         return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));
@@ -255,10 +269,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     nid.hIcon            = g_currentIcon;
 
     wchar_t tip[256];
-    swprintf_s(tip,
-        L"Display GPU: %s",
-        g_displayGpuName);
-
+    swprintf_s(tip, L"Display GPU: %s", g_displayGpuName);
     wcsncpy_s(nid.szTip, tip, _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
