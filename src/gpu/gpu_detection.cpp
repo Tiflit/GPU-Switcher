@@ -39,58 +39,9 @@ bool DetectDisplayGPU(GpuState& outState)
     return false;
 }
 
-bool DetectRenderGPU(GpuState& outState)
-{
-    ID3D11Device* device = nullptr;
-    ID3D11DeviceContext* context = nullptr;
-
-    HRESULT hr = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        0,
-        nullptr,
-        0,
-        D3D11_SDK_VERSION,
-        &device,
-        nullptr,
-        &context
-    );
-
-    if (FAILED(hr))
-        return false;
-
-    IDXGIDevice* dxgiDevice = nullptr;
-    IDXGIAdapter* adapter   = nullptr;
-
-    hr = device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
-    if (SUCCEEDED(hr))
-        dxgiDevice->GetAdapter(&adapter);
-
-    if (context)    context->Release();
-    if (device)     device->Release();
-    if (dxgiDevice) dxgiDevice->Release();
-
-    if (!adapter)
-        return false;
-
-    DXGI_ADAPTER_DESC desc;
-    if (FAILED(adapter->GetDesc(&desc)))
-    {
-        adapter->Release();
-        return false;
-    }
-
-    adapter->Release();
-
-    outState.name   = desc.Description;
-    outState.vendor = desc.VendorId;
-
-    return true;
-}
-
 bool ActivateRenderGPU()
 {
+    // Only used when user explicitly enables dGPU rendering.
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
 
@@ -113,18 +64,12 @@ bool ActivateRenderGPU()
     return SUCCEEDED(hr);
 }
 
-std::wstring BuildGpuTooltip(const GpuState& display, const GpuState& render)
+std::wstring BuildGpuTooltip(const GpuState& display)
 {
     std::wstringstream ss;
 
     ss << L"Display GPU: "
-       << (display.vendor ? display.name : L"<unknown>") << L"\n";
-
-    ss << L"Render GPU:  "
-       << (render.vendor ? render.name : L"<unknown>") << L"\n";
-
-    if (display.vendor && render.vendor && display.vendor != render.vendor)
-        ss << L"Active desktop rendering: " << render.name << L"\n";
+       << (display.vendor ? display.name : L"<unknown>");
 
     return ss.str();
 }
