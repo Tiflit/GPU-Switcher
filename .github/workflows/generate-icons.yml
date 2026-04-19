@@ -14,13 +14,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install ImageMagick + PNG optimizer
+      - name: Install SVG → PNG + ICO tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick optipng
-
-          # Allow ImageMagick to read SVGs (Ubuntu blocks this by default)
-          sudo sed -i 's/disable="read" pattern="SVG"/pattern="SVG"/' /etc/ImageMagick-6/policy.xml
+          sudo apt-get install -y librsvg2-bin imagemagick optipng
 
       - name: Prepare output folders
         run: |
@@ -38,8 +35,7 @@ jobs:
 
             # PNG sizes
             for size in 16 24 32 48 64 128 256; do
-              convert -background none "$svg" -resize ${size}x${size} \
-                "icons/png/${base}-${size}.png"
+              rsvg-convert -w ${size} -h ${size} "$svg" -o "icons/png/${base}-${size}.png"
             done
 
             # Optimize PNGs (lossless)
