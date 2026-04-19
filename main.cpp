@@ -11,7 +11,7 @@
 #define ID_RUN_AT_STARTUP 1001
 #define ID_EXIT 1002
 
-// Resource IDs (defined in resource.h / .rc)
+// Resource IDs for custom icons
 #define IDI_ICON_GENERIC  2001
 #define IDI_ICON_NVIDIA   2002
 #define IDI_ICON_AMD      2003
@@ -27,6 +27,7 @@ static ID3D11Device* g_d3dDevice = nullptr;
 static wchar_t g_gpuName[128] = L"GPU Tray Hook";
 static UINT g_gpuVendorId = 0;
 static HINSTANCE g_hInst = nullptr;
+static HICON g_currentIcon = nullptr;
 
 // ───────────────────────────────────────────────────────────────
 // Startup registration
@@ -39,13 +40,19 @@ bool IsStartupEnabled()
         0, KEY_READ, &key) != ERROR_SUCCESS)
         return false;
 
-    wchar_t path[MAX_PATH];
-    DWORD size = sizeof(path);
-    bool exists = (RegQueryValueExW(key, L"GPUSwitcher", nullptr, nullptr,
-        (BYTE*)path, &size) == ERROR_SUCCESS);
+    wchar_t regPath[MAX_PATH], exePath[MAX_PATH];
+    DWORD size = sizeof(regPath);
+    bool match = false;
+
+    if (RegQueryValueExW(key, L"GPUSwitcher", nullptr, nullptr,
+        (BYTE*)regPath, &size) == ERROR_SUCCESS)
+    {
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        match = (_wcsicmp(regPath, exePath) == 0);
+    }
 
     RegCloseKey(key);
-    return exists;
+    return match;
 }
 
 void SetStartup(bool enable)
@@ -76,18 +83,34 @@ void SetStartup(bool enable)
 // ───────────────────────────────────────────────────────────────
 HICON LoadVendorIcon()
 {
-    UINT v = g_gpuVendorId;
+    switch (g_gpuVendorId)
+    {
+    case 0x10DE: return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_NVIDIA)); // NVIDIA
+    case 0x1002: return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_AMD));    // AMD
+    case 0x8086: return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));  // Intel
+    default:     return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_GENERIC));
+    }
+}
 
-    if (v == 0x10DE) // NVIDIA
-        return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_NVIDIA));
+// ───────────────────────────────────────────────────────────────
+// Tray icon update helper
+// ───────────────────────────────────────────────────────────────
+void UpdateTrayIcon(HWND hwnd, HICON newIcon)
+{
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd;
+    nid.uID = TRAY_ID;
+    nid.uFlags = NIF_ICON | NIF_TIP;
+    nid.hIcon = newIcon;
+    wcsncpy_s(nid.szTip, g_gpuName, _TRUNCATE);
 
-    if (v == 0x1002) // AMD
-        return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_AMD));
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 
-    if (v == 0x8086) // Intel
-        return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));
+    if (g_currentIcon)
+        DestroyIcon(g_currentIcon);
 
-    return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_GENERIC));
+    g_currentIcon = newIcon;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -243,13 +266,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     InitD3D();
 
     // Add tray icon
+    g_currentIcon = LoadVendorIcon();
+
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = hwnd;
     nid.uID = TRAY_ID;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = LoadVendorIcon();
+    nid.hIcon = g_currentIcon;
     wcsncpy_s(nid.szTip, g_gpuName, _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
@@ -264,6 +289,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     Shell_NotifyIconW(NIM_DELETE, &nid);
     ShutdownD3D();
+    if (g_currentIcon) DestroyIcon(g_currentIcon);
     CloseHandle(hMutex);
     return 0;
 }
