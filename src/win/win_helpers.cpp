@@ -1,18 +1,75 @@
 #include "win_helpers.h"
 
 #include "../util/startup.h"
-#include "../util/logging.h"
+#include "../gpu/gpu_detection.h"
 
 // Globals from main.cpp
 extern GpuState g_displayGpuState;
 extern GpuState g_renderGpuState;
-extern bool     g_forceRenderGpu;
+extern bool     g_enableDgpuRendering;
 
-// From main.cpp
-extern void RefreshGpuState(HWND hwnd);
+// Registry path for settings
+static const wchar_t* kRegPath = L"Software\\GPU-Switcher";
+static const wchar_t* kRegValueDgpu = L"EnableDgpuRendering";
+
+bool IsDgpuRenderingEnabled()
+{
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegPath, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+        return false;
+
+    DWORD value = 0;
+    DWORD size  = sizeof(value);
+    DWORD type  = 0;
+
+    LONG res = RegGetValueW(
+        hKey,
+        nullptr,
+        kRegValueDgpu,
+        RRF_RT_REG_DWORD,
+        &type,
+        &value,
+        &size
+    );
+
+    RegCloseKey(hKey);
+
+    if (res != ERROR_SUCCESS || type != REG_DWORD)
+        return false;
+
+    return value != 0;
+}
+
+void SetDgpuRenderingEnabled(bool enabled)
+{
+    HKEY hKey;
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            kRegPath,
+            0,
+            nullptr,
+            0,
+            KEY_WRITE,
+            nullptr,
+            &hKey,
+            nullptr) != ERROR_SUCCESS)
+        return;
+
+    DWORD value = enabled ? 1u : 0u;
+    RegSetValueExW(
+        hKey,
+        kRegValueDgpu,
+        0,
+        REG_DWORD,
+        reinterpret_cast<const BYTE*>(&value),
+        sizeof(value)
+    );
+
+    RegCloseKey(hKey);
+}
 
 // Restart GPU driver (Ctrl+Win+Shift+B)
-void RestartGpuDriver()
+static void RestartGpuDriver()
 {
     keybd_event(VK_CONTROL, 0, 0, 0);
     keybd_event(VK_LWIN,    0, 0, 0);
@@ -32,6 +89,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
     case WM_DEVICECHANGE:
     case WM_POWERBROADCAST:
+        // Respect current setting after system/GPU changes
+        if (g_enableDgpuRendering)
+            ActivateRenderGPU();
         RefreshGpuState(hwnd);
         return 0;
 
@@ -41,9 +101,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             HMENU menu = CreatePopupMenu();
 
             AppendMenuW(menu,
-                MF_STRING | (g_forceRenderGpu ? MF_CHECKED : 0),
-                ID_TOGGLE_RENDER_GPU,
-                L"Force dGPU rendering");
+                MF_STRING | (g_enableDgpuRendering ? MF_CHECKED : 0),
+                ID_ENABLE_DGPU_RENDER,
+                L"Enable dGPU rendering");
 
             AppendMenuW(menu,
                 MF_STRING,
@@ -77,14 +137,36 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             switch (cmd)
             {
-            case ID_TOGGLE_RENDER_GPU:
-                g_forceRenderGpu = !g_forceRenderGpu;
+            case ID_ENABLE_DGPU_RENDER:
+            {
+                bool newVal = !g_enableDgpuRendering;
+                g_enableDgpuRendering = newVal;
+                SetDgpuRenderingEnabled(newVal);
+
+                if (g_enableDgpuRendering)
+                {
+                    ActivateRenderGPU();
+                    Sleep(150);
+                }
+
                 RefreshGpuState(hwnd);
                 break;
+            }
 
             case ID_RESTART_GPU_DRIVER:
+            {
                 RestartGpuDriver();
+                Sleep(500); // allow driver reset
+
+                if (g_enableDgpuRendering)
+                {
+                    ActivateRenderGPU();
+                    Sleep(150);
+                }
+
+                RefreshGpuState(hwnd);
                 break;
+            }
 
             case ID_RUN_AT_STARTUP:
                 SetStartup(!IsStartupEnabled());
