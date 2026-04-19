@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include "resource.h" // shared with .rc
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -10,12 +11,6 @@
 #define TRAY_ID 1
 #define ID_RUN_AT_STARTUP 1001
 #define ID_EXIT 1002
-
-// Resource IDs for custom icons
-#define IDI_ICON_GENERIC  2001
-#define IDI_ICON_NVIDIA   2002
-#define IDI_ICON_AMD      2003
-#define IDI_ICON_INTEL    2004
 
 // GPU vendor hints (NVIDIA Optimus + AMD Dynamic Switchable Graphics)
 extern "C" {
@@ -27,7 +22,8 @@ static ID3D11Device* g_d3dDevice = nullptr;
 static wchar_t g_gpuName[128] = L"GPU Tray Hook";
 static UINT g_gpuVendorId = 0;
 static HINSTANCE g_hInst = nullptr;
-static HICON g_currentIcon = nullptr;
+static HICON g_currentIcon = nullptr;   // resource icons must NOT be destroyed
+static bool g_iconIsOwned = false;      // always false for resource icons
 
 // ───────────────────────────────────────────────────────────────
 // Startup registration
@@ -83,13 +79,22 @@ void SetStartup(bool enable)
 // ───────────────────────────────────────────────────────────────
 HICON LoadVendorIcon()
 {
+    HICON icon = nullptr;
+
     switch (g_gpuVendorId)
     {
-    case 0x10DE: return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_NVIDIA)); // NVIDIA
-    case 0x1002: return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_AMD));    // AMD
-    case 0x8086: return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));  // Intel
-    default:     return LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_GENERIC));
+    case 0x10DE: icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_NVIDIA)); break;
+    case 0x1002: icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_AMD));    break;
+    case 0x8086: icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_INTEL));  break;
+    default:     icon = LoadIconW(g_hInst, MAKEINTRESOURCEW(IDI_ICON_GENERIC)); break;
     }
+
+    // Last‑resort fallback (should never happen)
+    if (!icon)
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+
+    g_iconIsOwned = false; // resource icons must NOT be destroyed
+    return icon;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -101,16 +106,22 @@ void UpdateTrayIcon(HWND hwnd, HICON newIcon)
     nid.cbSize = sizeof(nid);
     nid.hWnd = hwnd;
     nid.uID = TRAY_ID;
-    nid.uFlags = NIF_ICON | NIF_TIP;
+    nid.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     nid.hIcon = newIcon;
-    wcsncpy_s(nid.szTip, g_gpuName, _TRUNCATE);
+
+    wchar_t tip[128];
+    swprintf_s(tip, L"%s [%s]", g_gpuName,
+               g_d3dDevice ? L"dGPU active" : L"iGPU");
+    wcsncpy_s(nid.szTip, tip, _TRUNCATE);
 
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 
-    if (g_currentIcon)
+    // Only destroy icons we created manually (none in this version)
+    if (g_iconIsOwned && g_currentIcon)
         DestroyIcon(g_currentIcon);
 
     g_currentIcon = newIcon;
+    g_iconIsOwned = false;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -272,10 +283,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     nid.cbSize = sizeof(nid);
     nid.hWnd = hwnd;
     nid.uID = TRAY_ID;
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_currentIcon;
-    wcsncpy_s(nid.szTip, g_gpuName, _TRUNCATE);
+
+    wchar_t tip[128];
+    swprintf_s(tip, L"%s [%s]", g_gpuName,
+               g_d3dDevice ? L"dGPU active" : L"iGPU");
+    wcsncpy_s(nid.szTip, tip, _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -289,7 +304,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     Shell_NotifyIconW(NIM_DELETE, &nid);
     ShutdownD3D();
-    if (g_currentIcon) DestroyIcon(g_currentIcon);
     CloseHandle(hMutex);
     return 0;
 }
