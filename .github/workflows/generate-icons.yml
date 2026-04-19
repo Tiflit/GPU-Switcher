@@ -1,0 +1,51 @@
+name: Generate Icons
+
+on:
+  push:
+    paths:
+      - "icons/svg/*.svg"
+  workflow_dispatch:
+
+jobs:
+  build-icons:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Create output folders
+        run: |
+          mkdir -p icons/png
+          mkdir -p icons/ico
+
+      - name: Generate PNGs and ICOs
+        run: |
+          for svg in icons/svg/*.svg; do
+            base=$(basename "$svg" .svg)
+
+            # PNG sizes
+            for size in 16 24 32 48 64 128 256; do
+              convert -background none "$svg" -resize ${size}x${size} "icons/png/${base}-${size}.png"
+            done
+
+            # ICO (Windows-relevant sizes)
+            convert \
+              icons/png/${base}-16.png \
+              icons/png/${base}-24.png \
+              icons/png/${base}-32.png \
+              icons/png/${base}-48.png \
+              icons/png/${base}-64.png \
+              icons/png/${base}-128.png \
+              icons/png/${base}-256.png \
+              "icons/ico/${base}.ico"
+          done
+
+      - name: Commit generated icons
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-generate PNG and ICO icons"
+          file_pattern: icons/png/* icons/ico/*
