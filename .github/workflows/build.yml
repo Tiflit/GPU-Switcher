@@ -27,12 +27,11 @@ jobs:
         run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
         with:
           name: GPU-Switcher-x64
-          path: |
-            build/GPU-Switcher.exe
+          path: build/GPU-Switcher.exe
           retention-days: 30
