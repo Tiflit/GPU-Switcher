@@ -13,13 +13,9 @@ bool DetectDisplayGPU(GpuState& outState)
 {
     IDXGIFactory1* factory = nullptr;
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)))
-    {
-        LogError(L"Failed to create DXGI factory for display GPU detection.");
         return false;
-    }
 
     IDXGIAdapter1* adapter = nullptr;
-    bool found = false;
 
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
     {
@@ -31,22 +27,18 @@ bool DetectDisplayGPU(GpuState& outState)
             {
                 outState.name   = desc.Description;
                 outState.vendor = desc.VendorId;
-                found = true;
             }
 
             output->Release();
             adapter->Release();
-            break;
+            factory->Release();
+            return true;
         }
         adapter->Release();
     }
 
     factory->Release();
-
-    if (!found)
-        LogError(L"No display GPU detected.");
-
-    return found;
+    return false;
 }
 
 bool DetectRenderGPU(GpuState& outState)
@@ -68,10 +60,7 @@ bool DetectRenderGPU(GpuState& outState)
     );
 
     if (FAILED(hr))
-    {
-        LogError(L"Failed to create D3D11 device for render GPU detection.");
         return false;
-    }
 
     IDXGIDevice* dxgiDevice = nullptr;
     IDXGIAdapter* adapter   = nullptr;
@@ -85,16 +74,12 @@ bool DetectRenderGPU(GpuState& outState)
     if (dxgiDevice) dxgiDevice->Release();
 
     if (!adapter)
-    {
-        LogError(L"Failed to get DXGI adapter from D3D11 device.");
         return false;
-    }
 
     DXGI_ADAPTER_DESC desc;
     if (FAILED(adapter->GetDesc(&desc)))
     {
         adapter->Release();
-        LogError(L"Failed to get DXGI adapter description for render GPU.");
         return false;
     }
 
@@ -110,17 +95,13 @@ std::wstring BuildGpuTooltip(const GpuState& display, const GpuState& render)
 {
     std::wstringstream ss;
 
-    if (display.vendor != 0)
-        ss << L"Display GPU: " << display.name << L"\n";
-    else
-        ss << L"Display GPU: <unknown>\n";
+    ss << L"Display GPU: "
+       << (display.vendor ? display.name : L"<unknown>") << L"\n";
 
-    if (render.vendor != 0)
-        ss << L"Render GPU:  " << render.name << L"\n";
-    else
-        ss << L"Render GPU:  <unknown>\n";
+    ss << L"Render GPU:  "
+       << (render.vendor ? render.name : L"<unknown>") << L"\n";
 
-    if (display.vendor != 0 && render.vendor != 0 && display.vendor != render.vendor)
+    if (display.vendor && render.vendor && display.vendor != render.vendor)
         ss << L"Active desktop rendering: " << render.name << L"\n";
 
     return ss.str();
