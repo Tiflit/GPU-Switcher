@@ -5,15 +5,8 @@
 #include "gpu/gpu_state.h"
 #include "tray/tray_icon.h"
 #include "util/startup.h"
-#include "util/logging.h"
 #include "win/win_helpers.h"
 #include "resource.h"
-
-// GPU vendor hints (NVIDIA Optimus + AMD Dynamic Switchable Graphics)
-extern "C" {
-    __declspec(dllexport) DWORD NvOptimusEnablement = 1;
-    __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
-}
 
 // Global GPU state
 GpuState g_displayGpuState;
@@ -79,7 +72,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr
     );
 
-    // Initial behavior based on setting
+    // Initial detection based on setting
     DetectDisplayGPU(g_displayGpuState);
 
     if (g_enableDgpuRendering)
