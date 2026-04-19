@@ -1,5 +1,6 @@
 #include "logging.h"
 
+#include <Windows.h>   // <-- REQUIRED for SYSTEMTIME and GetLocalTime
 #include <fstream>
 #include <sstream>
 #include <filesystem>
