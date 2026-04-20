@@ -4,6 +4,9 @@
 #include <fstream>
 #include <filesystem>
 
+static bool g_loggingEnabled  = false;
+static bool g_firstError      = false;
+
 static void WriteLog(const wchar_t* level, const std::wstring& msg)
 {
     const wchar_t* logFile = L"gpu_switcher.log";
@@ -41,5 +44,20 @@ static void WriteLog(const wchar_t* level, const std::wstring& msg)
     if (out.is_open()) out << content;
 }
 
-void LogError(const std::wstring& msg) { WriteLog(L"ERROR", msg); }
-void LogInfo (const std::wstring& msg) { WriteLog(L"INFO",  msg); }
+void LogError(const std::wstring& msg)
+{
+    if (!g_firstError)
+    {
+        g_firstError      = true;
+        g_loggingEnabled  = true;
+        WriteLog(L"ERROR", L"--- Logging activated due to first error ---");
+    }
+
+    WriteLog(L"ERROR", msg);
+}
+
+void LogInfo(const std::wstring& msg)
+{
+    if (!g_loggingEnabled) return;
+    WriteLog(L"INFO", msg);
+}
