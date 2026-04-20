@@ -127,7 +127,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         UINT event = LOWORD(lParam);
 
-        if (event == WM_LBUTTONUP)
+        if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK)
         {
             NOTIFYICONDATAW balloon = g_nid;
             balloon.uFlags      |= NIF_INFO;
@@ -227,7 +227,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         nullptr, nullptr, hInst, nullptr);
 
     Sleep(200);
-    AcquireDGpu();
+
+    if (!AcquireDGpu())
+        LogError(L"Failed to acquire dGPU on startup");
 
     g_nid.cbSize           = sizeof(g_nid);
     g_nid.hWnd             = hwnd;
@@ -235,6 +237,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     g_nid.uCallbackMessage = WM_TRAY;
     g_nid.hIcon            = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APP_ICON));
+    if (!g_nid.hIcon)
+        g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcsncpy_s(g_nid.szTip, L"GPU-Switcher", _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &g_nid);
