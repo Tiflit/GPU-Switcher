@@ -1,18 +1,17 @@
-<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" stroke-linecap="round" stroke-linejoin="round">
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" stroke-linecap="round" stroke-linejoin="round">
   <defs>
-    <linearGradient id="neonRainbowV2" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%"   stop-color="#FF2A2A"/>
-      <stop offset="20%"  stop-color="#FF8A1A"/>
-      <stop offset="40%"  stop-color="#FFF12A"/>
-      <stop offset="60%"  stop-color="#2FFF4A"/>
-      <stop offset="80%"  stop-color="#28CFFF"/>
-      <stop offset="100%" stop-color="#D04CFF"/>
+    <linearGradient id="a" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff2a2a"/>
+      <stop offset="20%" stop-color="#ff8a1a"/>
+      <stop offset="40%" stop-color="#fff12a"/>
+      <stop offset="60%" stop-color="#2fff4a"/>
+      <stop offset="80%" stop-color="#28cfff"/>
+      <stop offset="100%" stop-color="#d04cff"/>
     </linearGradient>
   </defs>
-
-  <g transform="rotate(45 -8.485 20.485)" stroke="url(#neonRainbowV2)">
+  <g transform="rotate(45 -90.51 218.51)scale(12.97)" stroke="url(#a)">
     <rect x="-7" y="-7" width="14" height="14" rx="2" fill="#0f0f0f" stroke-width="1.1"/>
-    <path stroke-width=".9" d="M-5.4-2.2H5.4 M-5.4 2.2H5.4"/>
-    <rect x="-3.5" y="-3.5" width="7" height="7" rx="1.2" fill="#d8d8d8" stroke-width=".9"/>
+    <path stroke-width=".9" d="M-5.4-2.2H5.4M-5.4 2.2H5.4"/>
+    <rect x="-3.5" y="-3.5" width="7" height="7" rx="1.2" fill="url(#a)" stroke-width=".9"/>
   </g>
 </svg>
