@@ -1,26 +1,8 @@
-# Build artifacts
 /build/
-/CMakeFiles/
-/CMakeCache.txt
-/*.sln
-/*.vcxproj
-/*.vcxproj.filters
-
-# MSVC intermediates
 *.obj
 *.pdb
 *.ilk
 *.tlog
-
-# VS/IDE
 /.vs/
 *.user
-*.opensdf
-*.sdf
-
-# Runtime logs
 gpu_switcher.log
-
-# Generated icons
-/icons/png/
-/icons/ico/
