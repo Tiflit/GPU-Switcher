@@ -260,7 +260,8 @@ static int RunElevatedReset()
     return 0;
 }
 
-// lpCmdLine is unused because we parse the command line via GetCommandLineW().
+// lpCmdLine is unused because we parse via GetCommandLineW().
+// Removing the parameter name silences MSVC warning C4100.
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     // Check for elevated reset mode first
