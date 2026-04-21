@@ -10,9 +10,9 @@
 &nbsp;
 
 
-A tiny Windows tray utility that activates the discrete GPU (dGPU) on launch and keeps it alive, with zero CPU usage and no background threads.
+A tiny Windows tray utility that activates the discrete GPU (dGPU), with zero CPU usage and no background threads.
 
-Designed for hybrid GPU laptops with **NVIDIA Advanced Optimus** where you want the dGPU ready without running a heavy application, or without configuring every app manually through the driver control panel.
+Designed for hybrid GPU laptops with **NVIDIA Advanced Optimus** where you want the dGPU ready without running a heavy application and without configuring every app manually through the driver control panel.
 
 Please let me know if this also works for non-Nvidia display adapters.
 
@@ -21,7 +21,7 @@ Please let me know if this also works for non-Nvidia display adapters.
 ## Requirements
 
 - Windows 10 or 11 (64‑bit)
-- Designed and tested for NVIDIA Advanced Optimus capable laptops, but this should also work for any hybrid system with a MUX switch supporting on-the-fly dGPU display switching
+- Designed and tested for NVIDIA Advanced Optimus capable laptops, but this should work for any hybrid system with a MUX switch supporting on-the-fly dGPU display switching
 - D3D11‑capable discrete GPU
 
 ---
@@ -35,9 +35,9 @@ Please let me know if this also works for non-Nvidia display adapters.
 4. Add `GPU-Switcher.exe`
 5. Set **Preferred graphics processor → High‑performance NVIDIA processor**
 6. Enable **Automatic display switching**
-7. Exit and restart `GPU-Switcher.exe`
+7. Exit and relaunch `GPU-Switcher.exe`
 
-After this, GPU‑Switcher will consistently trigger a dGPU display switch on launch. Right-click on the tray icon to view extra functionalities.
+After this, GPU‑Switcher will consistently trigger a dGPU display switch on launch. Right-click on the tray icon to access extra options.
 
 ---
 
@@ -47,9 +47,9 @@ Left‑click to see current status.
 
 Right‑click for options:
 
-- **Start with Windows** — toggles a `HKCU\...\Run` registry entry
-- **Reset display drivers** — sends `Ctrl+Win+Shift+B` to reset all display adapters and exit the program
-- **Exit** — releases the GPU and removes the tray icon
+- **Start with Windows** — toggle a `HKCU\...\Run` registry entry
+- **Restart Display Adapters** — perform a ful reset of all display adapters and exit the program → requires UAC
+- **Exit** — release the GPU and remove the tray icon
 
 ---
 
@@ -57,9 +57,11 @@ Right‑click for options:
 
 On startup, GPU‑Switcher:
 
-1. **Exports GPU driver hints** (`NvOptimusEnablement`, `AmdPowerXpressRequestHighPerformance`) — read by the driver at process load to prefer the dGPU.
-2. **Creates a persistent D3D11 device** on the adapter with the most dedicated VRAM, keeping the process registered with the GPU driver.
-3. **Sits in the system tray** with zero CPU usage. Exiting releases the D3D device and the driver returns to normal routing.
+1. **Exports GPU driver hints** (`NvOptimusEnablement`, `AmdPowerXpressRequestHighPerformance`)
+2. **Creates a persistent D3D11 device** on the adapter with the most dedicated VRAM
+3. **Sits in the system tray** with zero CPU usage.
+
+Exiting releases the D3D device and the driver returns to normal routing.
 
 ---
 
@@ -67,10 +69,9 @@ On startup, GPU‑Switcher:
 
 | System | Behaviour |
 |--------|-----------|
-| NVIDIA Advanced Optimus | Full support — display switches to dGPU on launch |
-| Standard Optimus (no MUX) | dGPU stays registered and visible in NVCP; no display switch available |
-| AMD hybrid (best‑effort) | Driver hint is sent; switching behaviour might vary by OEM |
-| Other | Not tested |
+| NVIDIA Advanced Optimus | Everything should work |
+| Standard Optimus (no MUX) | dGPU will activate but display switch is not available |
+| AMD hybrid | Driver hint is sent; behaviour may vary by OEM |
 
 ---
 
@@ -99,29 +100,23 @@ On most non-Advanced-Optimus laptops, the iGPU is hardwired to the display panel
 **The tray icon does not reflect which GPU is currently driving the display**
 Reliably detecting the active display GPU via DXGI is not possible on Optimus systems — the NVIDIA adapter is always reported regardless of actual display routing. The icon is static by design.
 
-**"Reset display drivers" closes the app**
-After `Ctrl+Win+Shift+B`, the driver fully resets and the D3D device is invalidated. Re‑triggering automatic display switching requires a fresh process load, so the app exits. Relaunch manually, or enable "Start with Windows" and log out/in.
+**Rendering stutters after a display switch**
+On some systems, switching display output between GPUs leaves the driver in a partially initialized state and causes rendering stutters. Use **Restart Display Adapters** from the tray menu to resolve this without rebooting.
+
+**"Restart Display Adapters" closes the app**
+Re‑triggering automatic display switching requires a fresh process load, so the app exits. Relaunch manually, or enable "Start with Windows" and log out/in.
 
 **Sleep and wake**
 The app handles sleep/wake cycles by releasing and re‑acquiring the D3D device on resume. This re‑registers the process with the driver. Whether the display switch re‑triggers on resume depends on your system's driver behaviour and is not guaranteed.
 
 **AMD hybrid systems**
-The `AmdPowerXpressRequestHighPerformance` hint is exported and will be read by AMD drivers, but display switching behaviour on AMD hybrid systems has not been tested and varies significantly by OEM and driver version.
+The `AmdPowerXpressRequestHighPerformance` hint is exported and will be read by AMD drivers, but display switching behaviour on AMD hybrid systems has not been tested and may vary by OEM and driver versions.
 
-**No admin rights required**
-The app runs entirely in user space. The startup registry entry is written to `HKCU`, not `HKLM`.
+**UAC prompt required**
+The app runs almost entirely in user space. The only exception is the Restart Display Adapters feature, which performs a full graphics driver reload. Restarting display adapters requires elevated privileges, so Windows will show a UAC prompt when this option is selected.
 
 **Error logging**
 A log file (`gpu_switcher.log`, capped at 10 KB) is only created if something goes wrong. No file is written during normal operation.
-
----
-
-## Why not NvAPI or Lenovo WMI?
-
-- NvAPI display routing is undocumented and OEM‑dependent
-- Lenovo WMI GPU switching varies by BIOS and is unreliable
-
-The D3D11 + driver hint approach requires no admin rights, works across vendors, and has no OEM dependencies.
 
 ---
 
