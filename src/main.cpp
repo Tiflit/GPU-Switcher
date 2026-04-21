@@ -260,7 +260,8 @@ static int RunElevatedReset()
     return 0;
 }
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int)
+// lpCmdLine is unused because we parse the command line via GetCommandLineW().
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     // Check for elevated reset mode first
     int argc = 0;
