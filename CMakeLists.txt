@@ -28,5 +28,5 @@ target_compile_definitions(GPU-Switcher PRIVATE
 )
 
 target_link_libraries(GPU-Switcher PRIVATE
-    shell32 user32 gdi32 advapi32 d3d11 dxgi
+    shell32 user32 gdi32 advapi32 d3d11 dxgi setupapi cfgmgr32
 )
