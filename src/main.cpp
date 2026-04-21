@@ -83,7 +83,9 @@ static bool AcquireDGpu()
 
     if (FAILED(hr))
     {
-        LogError(L"D3D11CreateDevice failed");
+        wchar_t buf[64];
+        swprintf_s(buf, L"D3D11CreateDevice failed: 0x%08X", hr);
+        LogError(buf);
         return false;
     }
 
@@ -204,6 +206,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     g_hInst = hInst;
 
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"GPUSwitcherMutex");
+    if (!hMutex)
+    {
+        LogError(L"Failed to create mutex");
+        return 1;
+    }
+
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
         LogInfo(L"Another instance is already running");
