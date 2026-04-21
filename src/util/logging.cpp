@@ -7,12 +7,23 @@
 static bool g_loggingEnabled  = false;
 static bool g_firstError      = false;
 
+static std::wstring GetLogPath()
+{
+    wchar_t exePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0)
+        return L"gpu_switcher.log";
+
+    std::filesystem::path p(exePath);
+    p = p.parent_path() / L"gpu_switcher.log";
+    return p.wstring();
+}
+
 static void WriteLog(const wchar_t* level, const std::wstring& msg)
 {
-    const wchar_t* logFile = L"gpu_switcher.log";
+    const std::wstring logPath = GetLogPath();
 
     {
-        std::wofstream out(logFile, std::ios::app);
+        std::wofstream out(logPath, std::ios::app);
         if (!out.is_open()) return;
 
         SYSTEMTIME st;
@@ -28,10 +39,10 @@ static void WriteLog(const wchar_t* level, const std::wstring& msg)
 
     const std::uintmax_t MAX_SIZE = 10 * 1024;
     std::error_code ec;
-    auto size = std::filesystem::file_size(logFile, ec);
+    auto size = std::filesystem::file_size(logPath, ec);
     if (ec || size <= MAX_SIZE) return;
 
-    std::wifstream in(logFile);
+    std::wifstream in(logPath);
     if (!in.is_open()) return;
     std::wstring content((std::istreambuf_iterator<wchar_t>(in)),
                           std::istreambuf_iterator<wchar_t>());
@@ -40,7 +51,7 @@ static void WriteLog(const wchar_t* level, const std::wstring& msg)
     if (content.size() > MAX_SIZE / 2)
         content = content.substr(content.size() - MAX_SIZE / 2);
 
-    std::wofstream out(logFile, std::ios::trunc);
+    std::wofstream out(logPath, std::ios::trunc);
     if (out.is_open()) out << content;
 }
 
