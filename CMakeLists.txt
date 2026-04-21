@@ -12,11 +12,15 @@ add_compile_options(
 
 add_definitions(-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00)
 
+# ---------------------------------------------------------
+# Add ALL source files, including the new reset.cpp
+# ---------------------------------------------------------
 add_executable(GPU-Switcher WIN32
     src/main.cpp
     src/resource.rc
     src/util/logging.cpp
     src/util/startup.cpp
+    src/util/reset.cpp        # <-- REQUIRED for CycleAllDisplayAdapters()
 )
 
 set_target_properties(GPU-Switcher PROPERTIES OUTPUT_NAME "GPU-Switcher")
@@ -27,6 +31,17 @@ target_compile_definitions(GPU-Switcher PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
 )
 
+# ---------------------------------------------------------
+# Link required system libraries
+# Added: setupapi, cfgmgr32
+# ---------------------------------------------------------
 target_link_libraries(GPU-Switcher PRIVATE
-    shell32 user32 gdi32 advapi32 d3d11 dxgi setupapi cfgmgr32
+    shell32
+    user32
+    gdi32
+    advapi32
+    d3d11
+    dxgi
+    setupapi
+    cfgmgr32
 )
