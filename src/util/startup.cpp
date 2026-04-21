@@ -18,8 +18,8 @@ bool IsStartupEnabled()
     if (RegQueryValueExW(key, kValName, nullptr, nullptr,
                          (BYTE*)regPath, &size) == ERROR_SUCCESS)
     {
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        match = (_wcsicmp(regPath, exePath) == 0);
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) != 0)
+            match = (_wcsicmp(regPath, exePath) == 0);
     }
 
     RegCloseKey(key);
@@ -29,13 +29,19 @@ bool IsStartupEnabled()
 void SetStartup(bool enable)
 {
     HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0,
+                        KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
         return;
 
     if (enable)
     {
         wchar_t exePath[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0)
+        {
+            RegCloseKey(key);
+            return;
+        }
+
         RegSetValueExW(key, kValName, 0, REG_SZ,
             (BYTE*)exePath, (DWORD)((wcslen(exePath) + 1) * sizeof(wchar_t)));
     }
