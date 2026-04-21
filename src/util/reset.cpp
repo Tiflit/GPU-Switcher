@@ -41,12 +41,12 @@ void CycleAllDisplayAdapters()
     // ------------------------------------------------------------
     std::vector<wchar_t> buf(len);
 
-    if (CM_Get_Device_ID_ListW(
-            buf.data(),
-            len,
-            nullptr,                        // no filter string
-            CM_GETIDLIST_FILTER_PRESENT
-        ) != CR_SUCCESS)
+if (CM_Get_Device_ID_ListW(
+        nullptr,                        // pszFilter
+        buf.data(),                     // Buffer
+        len,                            // BufferLen
+        CM_GETIDLIST_FILTER_PRESENT
+    ) != CR_SUCCESS)
     {
         LogError(L"CM_Get_Device_ID_List failed");
         return;
