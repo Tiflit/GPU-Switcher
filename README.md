@@ -1,5 +1,14 @@
+<p align="center">
+  <img src="https://github.com/Tiflit/GPU-Switcher/blob/main/src/icons/png/main-rainbow-128.png" height="90">
+</p>
 
-# GPU‑Switcher
+<h1 align="center">GPU‑Switcher</h1>
+
+<p align="center"><strong>A lightweight GPU switching utility for Windows</strong></p>
+
+
+&nbsp;
+
 
 A tiny Windows tray utility that activates the discrete GPU (dGPU) on launch and keeps it alive, with zero CPU usage and no background threads.
 
