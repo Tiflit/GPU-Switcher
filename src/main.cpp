@@ -136,6 +136,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         UINT event = LOWORD(lParam);
 
+        // Left-click: show status balloon
         if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK)
         {
             NOTIFYICONDATAW balloon = g_nid;
@@ -149,14 +150,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        // Right-click: show context menu
         if (event == WM_RBUTTONUP)
         {
             HMENU menu = CreatePopupMenu();
             bool startup = IsStartupEnabled();
 
-            AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0), ID_START_WINDOWS,  L"Start with Windows");
-            AppendMenuW(menu, MF_STRING,                               ID_RESET_DISPLAYS, L"Full GPU reset");
-            AppendMenuW(menu, MF_STRING,                               ID_EXIT,           L"Exit");
+            AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0),
+                        ID_START_WINDOWS, L"Start with Windows");
+
+            AppendMenuW(menu, MF_STRING,
+                        ID_RESET_DISPLAYS, L"Restart Display Adapters");
+
+            AppendMenuW(menu, MF_STRING,
+                        ID_EXIT, L"Exit");
 
             POINT pt;
             GetCursorPos(&pt);
@@ -175,13 +182,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             case ID_RESET_DISPLAYS:
             {
-                SetTrayTip(L"Full GPU reset requested…");
-                LogInfo(L"Full GPU reset requested — launching elevated child");
+                SetTrayTip(L"Restarting display adapters…");
+                LogInfo(L"Restart Display Adapters requested — launching elevated child");
 
                 wchar_t exePath[MAX_PATH] = {};
                 GetModuleFileNameW(nullptr, exePath, MAX_PATH);
 
-                SHELLEXECUTEINFOW sei  = {};
+                SHELLEXECUTEINFOW sei = {};
                 sei.cbSize       = sizeof(sei);
                 sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
                 sei.lpVerb       = L"runas";
@@ -191,25 +198,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                 if (!ShellExecuteExW(&sei) || !sei.hProcess)
                 {
-                    // UAC was cancelled or launch failed — restore tooltip
                     LogInfo(L"Elevated launch cancelled or failed");
                     SetTrayTip(L"GPU-Switcher");
                     break;
                 }
 
-                // UAC accepted — release GPU, update tooltip, start wait thread
                 LogInfo(L"Elevated child launched — releasing dGPU and waiting");
                 ReleaseDGpu();
-                SetTrayTip(L"Resetting GPU… screen may flicker");
+                SetTrayTip(L"Restarting display adapters… screen may flicker");
 
-                auto* ctx    = new WaitCtx{ sei.hProcess, hwnd };
+                auto* ctx = new WaitCtx{ sei.hProcess, hwnd };
                 HANDLE hThread = CreateThread(nullptr, 0, WaitForResetThread,
                                               ctx, 0, nullptr);
                 if (hThread)
-                    CloseHandle(hThread); // we don't need to track it
+                {
+                    CloseHandle(hThread);
+                }
                 else
                 {
-                    // Thread creation failed — clean up and exit anyway
                     LogError(L"CreateThread failed — exiting immediately");
                     CloseHandle(sei.hProcess);
                     delete ctx;
@@ -224,6 +230,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 break;
             }
         }
+
         return 0;
     }
 
