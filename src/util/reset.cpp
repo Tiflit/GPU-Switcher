@@ -13,10 +13,11 @@ struct AdapterTarget
 {
     DEVINST      inst = 0;
     std::wstring name;
+    std::wstring instanceId;
     bool         disabledSuccessfully = false;
 
-    AdapterTarget(DEVINST i, const std::wstring& n, bool d = false)
-        : inst(i), name(n), disabledSuccessfully(d) {}
+    AdapterTarget(DEVINST i, const std::wstring& n, const std::wstring& id, bool d = false)
+        : inst(i), name(n), instanceId(id), disabledSuccessfully(d) {}
 };
 
 static std::wstring ConfigRetToString(CONFIGRET cr)
@@ -101,24 +102,48 @@ void CycleAllDisplayAdapters()
                 }
             }
 
-            adapters.push_back({ inst, devName, false });
+            // Query hardware ID to distinguish physical PCI graphics cards from virtual/software adapters
+            wchar_t hwId[512] = {};
+            ULONG hwIdLen = sizeof(hwId);
+            CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, hwId, &hwIdLen, 0);
+
+            wchar_t logBuf[512];
+            swprintf_s(logBuf, L"Discovered display device: %s [Instance: %s, HardwareID: %s]",
+                devName, p, hwId[0] ? hwId : L"(none)");
+            LogInfo(logBuf);
+
+            // Only target physical PCI display devices (e.g. PCI\VEN_10DE, PCI\VEN_1002, PCI\VEN_8086)
+            // Skip non-PCI devices (ROOT\, SWD\, USB\) and Microsoft Basic Display Adapter (VEN_1414)
+            if (_wcsnicmp(p, L"PCI\\", 4) != 0 && _wcsnicmp(hwId, L"PCI\\", 4) != 0)
+            {
+                LogInfo(std::wstring(L"Skipping non-PCI display device: ") + devName);
+                continue;
+            }
+
+            if (wcsstr(hwId, L"VEN_1414") != nullptr || wcsstr(p, L"VEN_1414") != nullptr)
+            {
+                LogInfo(std::wstring(L"Skipping Microsoft Basic/Virtual display adapter: ") + devName);
+                continue;
+            }
+
+            adapters.push_back({ inst, devName, p, false });
         }
     }
 
     if (adapters.empty())
     {
-        LogError(L"No display adapters found for reset");
+        LogError(L"No physical PCI display adapters found for reset");
         return;
     }
 
     LogInfo(std::wstring(L"Beginning reset of ") + std::to_wstring(adapters.size()) + L" display adapter(s):");
     for (const auto& a : adapters)
-        LogInfo(L"  - Target: " + a.name);
+        LogInfo(L"  - Target: " + a.name + L" (" + a.instanceId + L")");
 
     // 4. Disable display adapters and verify status
     for (auto& a : adapters)
     {
-        LogInfo(L"Disabling: " + a.name);
+        LogInfo(L"Disabling: " + a.name + L" (" + a.instanceId + L")");
         CONFIGRET cr = CM_Disable_DevNode(a.inst, 0);
         if (cr == CR_SUCCESS)
         {
@@ -137,7 +162,13 @@ void CycleAllDisplayAdapters()
     LogInfo(L"Re-enabling display adapters...");
     for (auto& a : adapters)
     {
-        LogInfo(L"Re-enabling: " + a.name);
+        if (!a.disabledSuccessfully)
+        {
+            LogInfo(L"Skipping re-enable for " + a.name + L" (was not disabled)");
+            continue;
+        }
+
+        LogInfo(L"Re-enabling: " + a.name + L" (" + a.instanceId + L")");
         CONFIGRET cr = CM_Enable_DevNode(a.inst, 0);
 
         int retries = 3;
