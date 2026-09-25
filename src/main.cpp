@@ -3,6 +3,8 @@
 #include <dxgi.h>
 #include <d3d11.h>
 
+#include <wrl/client.h>
+
 #include "resource.h"
 #include "util/logging.h"
 #include "util/startup.h"
@@ -25,63 +27,102 @@ extern "C" {
 #define ID_RESET_DISPLAYS 1002
 #define ID_EXIT           1003
 
-static HINSTANCE            g_hInst   = nullptr;
-static ID3D11Device*        g_device  = nullptr;
-static ID3D11DeviceContext* g_context = nullptr;
-static NOTIFYICONDATAW      g_nid     = {};
-static UINT                 g_taskbarCreatedMsg = 0;
+using Microsoft::WRL::ComPtr;
+
+static HINSTANCE                            g_hInst   = nullptr;
+static ComPtr<ID3D11Device>                 g_device;
+static ComPtr<ID3D11DeviceContext>          g_context;
+static NOTIFYICONDATAW                      g_nid     = {};
+static UINT                                 g_taskbarCreatedMsg = 0;
 
 static void ReleaseDGpu()
 {
-    if (g_context) { g_context->Release(); g_context = nullptr; }
-    if (g_device)  { g_device->Release();  g_device  = nullptr; }
+    if (g_context)
+    {
+        g_context->ClearState();
+        g_context->Flush();
+        g_context.Reset();
+    }
+    g_device.Reset();
 }
 
 static bool AcquireDGpu()
 {
-    IDXGIFactory1* factory = nullptr;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)))
+    ReleaseDGpu();
+
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
     {
         LogError(L"CreateDXGIFactory1 failed");
         return false;
     }
 
-    IDXGIAdapter1* best     = nullptr;
-    SIZE_T         bestVram = 0;
-    IDXGIAdapter1* adapter  = nullptr;
-    wchar_t        bestName[128] = {};
+    ComPtr<IDXGIAdapter1> bestAdapter;
+    DXGI_ADAPTER_DESC1    bestDesc = {};
+    int                   bestScore = -1;
 
-    for (UINT i = 0;
-         factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND;
-         ++i)
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
     {
         DXGI_ADAPTER_DESC1 desc;
-        if (SUCCEEDED(adapter->GetDesc1(&desc))        &&
-            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
-            desc.DedicatedVideoMemory > bestVram)
+        if (SUCCEEDED(adapter->GetDesc1(&desc)))
         {
-            bestVram = desc.DedicatedVideoMemory;
-            wcsncpy_s(bestName, desc.Description, _TRUNCATE);
-            if (best) best->Release();
-            best = adapter;
-            continue;
-        }
-        adapter->Release();
-    }
-    factory->Release();
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            {
+                adapter.Reset();
+                continue;
+            }
 
-    if (!best)
+            int score = 0;
+            // Prioritize dedicated discrete vendors targeting Optimus / PowerXpress
+            if (desc.VendorId == 0x10DE)       // NVIDIA
+                score = 100;
+            else if (desc.VendorId == 0x1002)  // AMD
+                score = 50;
+            else if (desc.VendorId == 0x8086)  // Intel
+                score = 10;
+
+            // Add score proportional to dedicated VRAM (64 MB increments)
+            score += static_cast<int>(desc.DedicatedVideoMemory / (1024 * 1024 * 64));
+
+            wchar_t logBuf[256];
+            swprintf_s(logBuf, L"Detected GPU [%u]: %s (Vendor: 0x%04X, Dedicated VRAM: %llu MB)",
+                i, desc.Description, desc.VendorId,
+                static_cast<unsigned long long>(desc.DedicatedVideoMemory / (1024 * 1024)));
+            LogInfo(logBuf);
+
+            if (score > bestScore)
+            {
+                bestScore   = score;
+                bestDesc    = desc;
+                bestAdapter = adapter;
+            }
+        }
+        adapter.Reset();
+    }
+
+    if (!bestAdapter)
     {
-        LogError(L"No discrete GPU adapter found");
+        LogError(L"No suitable graphics adapter found");
         return false;
     }
 
+    LogInfo(std::wstring(L"Selected target adapter: ") + bestDesc.Description);
+
     D3D_FEATURE_LEVEL level = {};
+    D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0
+    };
+
     HRESULT hr = D3D11CreateDevice(
-        best, D3D_DRIVER_TYPE_UNKNOWN,
-        nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+        bestAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN,
+        nullptr, 0,
+        featureLevels, ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION,
         &g_device, &level, &g_context);
-    best->Release();
 
     if (FAILED(hr))
     {
@@ -92,9 +133,9 @@ static bool AcquireDGpu()
     }
 
     if (level < D3D_FEATURE_LEVEL_11_0)
-        LogError(L"Warning: acquired adapter does not support D3D11 FL 11.0");
+        LogError(L"Warning: acquired adapter feature level is below D3D_FEATURE_LEVEL_11_0");
 
-    LogInfo(std::wstring(L"Acquired adapter: ") + bestName);
+    LogInfo(std::wstring(L"Successfully initialized D3D11 device on: ") + bestDesc.Description);
     return true;
 }
 
@@ -120,6 +161,8 @@ static DWORD WINAPI WaitForResetThread(LPVOID param)
     return 0;
 }
 
+static bool                 g_resetInProgress   = false;
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == g_taskbarCreatedMsg)
@@ -136,8 +179,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         UINT event = LOWORD(lParam);
 
-        // Left-click: show status balloon
-        if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK)
+        // Left-click / select: show status balloon
+        if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK ||
+            event == NIN_SELECT || event == NIN_KEYSELECT)
         {
             NOTIFYICONDATAW balloon = g_nid;
             balloon.uFlags      |= NIF_INFO;
@@ -150,8 +194,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // Right-click: show context menu
-        if (event == WM_RBUTTONUP)
+        // Right-click / context menu key: show context menu
+        if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU)
         {
             HMENU menu = CreatePopupMenu();
             bool startup = IsStartupEnabled();
@@ -159,7 +203,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0),
                         ID_START_WINDOWS, L"Start with Windows");
 
-            AppendMenuW(menu, MF_STRING,
+            AppendMenuW(menu, MF_STRING | (g_resetInProgress ? MF_GRAYED : 0),
                         ID_RESET_DISPLAYS, L"Restart Display Adapters");
 
             AppendMenuW(menu, MF_STRING,
@@ -172,6 +216,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int cmd = TrackPopupMenu(menu,
                 TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                 pt.x, pt.y, 0, hwnd, nullptr);
+            PostMessageW(hwnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
 
             switch (cmd)
@@ -182,8 +227,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             case ID_RESET_DISPLAYS:
             {
+                if (g_resetInProgress)
+                    break;
+
+                g_resetInProgress = true;
                 SetTrayTip(L"Restarting display adapters…");
-                LogInfo(L"Restart Display Adapters requested — launching elevated child");
+                LogInfo(L"Restart Display Adapters requested");
+
+                // Release dGPU BEFORE spawning elevated child to prevent driver conflicts
+                ReleaseDGpu();
 
                 wchar_t exePath[MAX_PATH] = {};
                 GetModuleFileNameW(nullptr, exePath, MAX_PATH);
@@ -198,13 +250,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                 if (!ShellExecuteExW(&sei) || !sei.hProcess)
                 {
-                    LogInfo(L"Elevated launch cancelled or failed");
+                    LogInfo(L"Elevated launch cancelled or failed — reacquiring dGPU");
+                    g_resetInProgress = false;
                     SetTrayTip(L"GPU-Switcher");
+                    AcquireDGpu();
                     break;
                 }
 
-                LogInfo(L"Elevated child launched — releasing dGPU and waiting");
-                ReleaseDGpu();
+                LogInfo(L"Elevated child launched — waiting for reset completion");
                 SetTrayTip(L"Restarting display adapters… screen may flicker");
 
                 auto* ctx = new WaitCtx{ sei.hProcess, hwnd };

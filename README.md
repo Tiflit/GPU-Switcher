@@ -115,8 +115,8 @@ The `AmdPowerXpressRequestHighPerformance` hint is exported and will be read by 
 **UAC prompt required**
 The app runs almost entirely in user space. The only exception is the Restart Display Adapters feature, which performs a full graphics driver reload. Restarting display adapters requires elevated privileges, so Windows will show a UAC prompt when this option is selected.
 
-**Error logging**
-A log file (`gpu_switcher.log`, capped at 10 KB) is only created if something goes wrong. No file is written during normal operation.
+**Logging**
+A rolling log file (`%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`, capped at 16 KB) records adapter detection, reset operations, and any errors.
 
 ---
 
