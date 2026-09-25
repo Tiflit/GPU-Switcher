@@ -2,8 +2,8 @@
 #include <shellapi.h>
 #include <dxgi.h>
 #include <d3d11.h>
-
 #include <wrl/client.h>
+#include <string>
 
 #include "resource.h"
 #include "util/logging.h"
@@ -20,20 +20,29 @@ extern "C" {
     __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 }
 
-#define WM_TRAY           (WM_USER + 1)
-#define WM_RESET_DONE     (WM_USER + 2)
-#define TRAY_ID           1
-#define ID_START_WINDOWS  1001
-#define ID_RESET_DISPLAYS 1002
-#define ID_EXIT           1003
+#define WM_TRAY                 (WM_USER + 1)
+#define WM_RESET_DONE           (WM_USER + 2)
+#define TRAY_ID                 1
+#define ID_START_WINDOWS        1001
+#define ID_RESET_DISPLAYS       1002
+#define ID_EXIT                 1003
+
+#define TIMER_RESUME_REACQUIRE  2001
+#define TIMER_HEALTH_CHECK      2002
 
 using Microsoft::WRL::ComPtr;
 
-static HINSTANCE                            g_hInst   = nullptr;
+static HINSTANCE                            g_hInst             = nullptr;
+static HANDLE                               g_hMutex            = nullptr;
 static ComPtr<ID3D11Device>                 g_device;
 static ComPtr<ID3D11DeviceContext>          g_context;
-static NOTIFYICONDATAW                      g_nid     = {};
+static NOTIFYICONDATAW                      g_nid               = {};
 static UINT                                 g_taskbarCreatedMsg = 0;
+
+static UINT                                 g_activeVendorId    = 0;
+static std::wstring                         g_activeGpuName;
+static bool                                 g_dGpuActive        = false;
+static bool                                 g_resetInProgress   = false;
 
 static void ReleaseDGpu()
 {
@@ -44,6 +53,7 @@ static void ReleaseDGpu()
         g_context.Reset();
     }
     g_device.Reset();
+    g_dGpuActive = false;
 }
 
 static bool AcquireDGpu()
@@ -135,17 +145,73 @@ static bool AcquireDGpu()
     if (level < D3D_FEATURE_LEVEL_11_0)
         LogError(L"Warning: acquired adapter feature level is below D3D_FEATURE_LEVEL_11_0");
 
+    g_activeVendorId = bestDesc.VendorId;
+    g_activeGpuName  = bestDesc.Description;
+    g_dGpuActive     = true;
+
     LogInfo(std::wstring(L"Successfully initialized D3D11 device on: ") + bestDesc.Description);
     return true;
 }
 
-// Updates only the tooltip text, leaves all other g_nid fields intact
-static void SetTrayTip(const wchar_t* tip)
+static HICON GetVendorIcon(bool isActive, UINT vendorId)
 {
-    wcsncpy_s(g_nid.szTip, tip, _TRUNCATE);
-    g_nid.uFlags = NIF_TIP | NIF_SHOWTIP;
+    UINT resId = IDI_ICON_WARNING;
+    if (isActive)
+    {
+        switch (vendorId)
+        {
+        case 0x10DE: resId = IDI_ICON_NVIDIA;  break;
+        case 0x1002: resId = IDI_ICON_AMD;     break;
+        case 0x8086: resId = IDI_ICON_INTEL;   break;
+        default:     resId = IDI_ICON_UNKNOWN; break;
+        }
+    }
+
+    HICON hIcon = static_cast<HICON>(LoadImageW(
+        g_hInst,
+        MAKEINTRESOURCEW(resId),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_SHARED));
+
+    if (!hIcon)
+    {
+        hIcon = LoadIconW(g_hInst, MAKEINTRESOURCEW(resId));
+    }
+    if (!hIcon)
+    {
+        hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+    return hIcon;
+}
+
+static void UpdateTrayStatus(const wchar_t* customTip = nullptr)
+{
+    if (!g_nid.hWnd)
+        return;
+
+    g_nid.hIcon = GetVendorIcon(g_dGpuActive && !g_resetInProgress, g_activeVendorId);
+
+    if (customTip)
+    {
+        wcsncpy_s(g_nid.szTip, customTip, _TRUNCATE);
+    }
+    else if (g_resetInProgress)
+    {
+        wcsncpy_s(g_nid.szTip, L"GPU-Switcher: Restarting display adapters…", _TRUNCATE);
+    }
+    else if (g_dGpuActive)
+    {
+        swprintf_s(g_nid.szTip, L"GPU-Switcher: %s", g_activeGpuName.c_str());
+    }
+    else
+    {
+        wcsncpy_s(g_nid.szTip, L"GPU-Switcher: dGPU inactive", _TRUNCATE);
+    }
+
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
-    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP; // restore
 }
 
 // Thread proc: waits for the elevated child to exit, then posts WM_RESET_DONE
@@ -161,8 +227,6 @@ static DWORD WINAPI WaitForResetThread(LPVOID param)
     return 0;
 }
 
-static bool                 g_resetInProgress   = false;
-
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == g_taskbarCreatedMsg)
@@ -170,6 +234,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         Shell_NotifyIconW(NIM_ADD, &g_nid);
         g_nid.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+        UpdateTrayStatus();
         return 0;
     }
 
@@ -183,13 +248,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK ||
             event == NIN_SELECT || event == NIN_KEYSELECT)
         {
+            if (g_device)
+            {
+                HRESULT hr = g_device->GetDeviceRemovedReason();
+                if (hr != S_OK)
+                {
+                    wchar_t buf[128];
+                    swprintf_s(buf, L"D3D11 device lost (0x%08X) — re-acquiring", hr);
+                    LogError(buf);
+                    AcquireDGpu();
+                    UpdateTrayStatus();
+                }
+            }
+
             NOTIFYICONDATAW balloon = g_nid;
             balloon.uFlags      |= NIF_INFO;
-            balloon.dwInfoFlags  = NIIF_INFO | NIIF_NOSOUND;
+            balloon.dwInfoFlags  = (g_dGpuActive ? NIIF_INFO : NIIF_WARNING) | NIIF_NOSOUND;
             wcsncpy_s(balloon.szInfoTitle, L"GPU-Switcher", _TRUNCATE);
-            wcsncpy_s(balloon.szInfo,
-                g_device ? L"dGPU active" : L"dGPU acquisition failed — check log",
-                _TRUNCATE);
+            if (g_resetInProgress)
+            {
+                wcsncpy_s(balloon.szInfo, L"Display adapter restart in progress…", _TRUNCATE);
+            }
+            else if (g_dGpuActive)
+            {
+                swprintf_s(balloon.szInfo, L"Active discrete GPU:\n%s", g_activeGpuName.c_str());
+            }
+            else
+            {
+                wcsncpy_s(balloon.szInfo, L"dGPU acquisition failed — check log", _TRUNCATE);
+            }
             Shell_NotifyIconW(NIM_MODIFY, &balloon);
             return 0;
         }
@@ -231,7 +318,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     break;
 
                 g_resetInProgress = true;
-                SetTrayTip(L"Restarting display adapters…");
+                UpdateTrayStatus(L"GPU-Switcher: Restarting display adapters…");
                 LogInfo(L"Restart Display Adapters requested");
 
                 // Release dGPU BEFORE spawning elevated child to prevent driver conflicts
@@ -252,13 +339,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 {
                     LogInfo(L"Elevated launch cancelled or failed — reacquiring dGPU");
                     g_resetInProgress = false;
-                    SetTrayTip(L"GPU-Switcher");
                     AcquireDGpu();
+                    UpdateTrayStatus();
                     break;
                 }
 
                 LogInfo(L"Elevated child launched — waiting for reset completion");
-                SetTrayTip(L"Restarting display adapters… screen may flicker");
+                UpdateTrayStatus(L"Restarting display adapters… screen may flicker");
 
                 auto* ctx = new WaitCtx{ sei.hProcess, hwnd };
                 HANDLE hThread = CreateThread(nullptr, 0, WaitForResetThread,
@@ -288,22 +375,88 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_RESET_DONE:
-        LogInfo(L"Elevated child finished — exiting");
+    {
+        LogInfo(L"Elevated child finished — re-launching GPU-Switcher and exiting");
         Shell_NotifyIconW(NIM_DELETE, &g_nid);
+
+        if (g_hMutex)
+        {
+            CloseHandle(g_hMutex);
+            g_hMutex = nullptr;
+        }
+
+        wchar_t exePath[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0)
+        {
+            HINSTANCE hInstApp = ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_SHOWNORMAL);
+            if (reinterpret_cast<INT_PTR>(hInstApp) <= 32)
+            {
+                LogError(L"Failed to re-launch GPU-Switcher after reset");
+            }
+            else
+            {
+                LogInfo(L"Successfully re-launched GPU-Switcher instance");
+            }
+        }
+
         PostQuitMessage(0);
         return 0;
+    }
 
     case WM_POWERBROADCAST:
-        if (wParam == PBT_APMRESUMEAUTOMATIC)
+        if (wParam == PBT_APMSUSPEND)
         {
-            LogInfo(L"System resumed — re-acquiring dGPU");
+            LogInfo(L"System entering suspend — releasing dGPU");
             ReleaseDGpu();
-            Sleep(1000);
-            AcquireDGpu();
+            UpdateTrayStatus();
+        }
+        else if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)
+        {
+            LogInfo(L"System resumed — scheduling dGPU re-acquisition");
+            ReleaseDGpu();
+            UpdateTrayStatus(L"GPU-Switcher: Resuming…");
+            SetTimer(hwnd, TIMER_RESUME_REACQUIRE, 1500, nullptr);
+        }
+        return TRUE;
+
+    case WM_TIMER:
+        if (wParam == TIMER_RESUME_REACQUIRE)
+        {
+            KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
+            LogInfo(L"Power resume timer fired — re-acquiring dGPU");
+            if (!AcquireDGpu())
+            {
+                LogError(L"Failed to re-acquire dGPU after system resume");
+            }
+            UpdateTrayStatus();
+        }
+        else if (wParam == TIMER_HEALTH_CHECK)
+        {
+            if (g_device)
+            {
+                HRESULT hr = g_device->GetDeviceRemovedReason();
+                if (hr != S_OK)
+                {
+                    wchar_t buf[128];
+                    swprintf_s(buf, L"D3D11 device removed or lost (0x%08X) — re-acquiring", hr);
+                    LogError(buf);
+                    AcquireDGpu();
+                    UpdateTrayStatus();
+                }
+            }
+            else if (!g_resetInProgress)
+            {
+                if (AcquireDGpu())
+                {
+                    UpdateTrayStatus();
+                }
+            }
         }
         return 0;
 
     case WM_DESTROY:
+        KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
+        KillTimer(hwnd, TIMER_HEALTH_CHECK);
         PostQuitMessage(0);
         return 0;
     }
@@ -342,8 +495,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     // Normal tray mode
     g_hInst = hInst;
 
-    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"GPUSwitcherMutex");
-    if (!hMutex)
+    g_hMutex = CreateMutexW(nullptr, TRUE, L"GPUSwitcherMutex");
+    if (!g_hMutex)
     {
         LogError(L"Failed to create mutex");
         return 1;
@@ -352,7 +505,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
         LogInfo(L"Another instance is already running");
-        CloseHandle(hMutex);
+        CloseHandle(g_hMutex);
+        g_hMutex = nullptr;
         return 0;
     }
 
@@ -381,14 +535,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     g_nid.uID              = TRAY_ID;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     g_nid.uCallbackMessage = WM_TRAY;
-    g_nid.hIcon            = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APP_ICON));
+    g_nid.hIcon            = GetVendorIcon(g_dGpuActive, g_activeVendorId);
     if (!g_nid.hIcon)
         g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcsncpy_s(g_nid.szTip, L"GPU-Switcher", _TRUNCATE);
+
+    if (g_dGpuActive)
+        swprintf_s(g_nid.szTip, L"GPU-Switcher: %s", g_activeGpuName.c_str());
+    else
+        wcsncpy_s(g_nid.szTip, L"GPU-Switcher: dGPU inactive", _TRUNCATE);
 
     Shell_NotifyIconW(NIM_ADD, &g_nid);
     g_nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+
+    // Periodic health check every 30 seconds
+    SetTimer(hwnd, TIMER_HEALTH_CHECK, 30000, nullptr);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0))
@@ -400,6 +561,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
     ReleaseDGpu();
     LogInfo(L"GPU-Switcher exited cleanly");
-    CloseHandle(hMutex);
+    if (g_hMutex)
+    {
+        CloseHandle(g_hMutex);
+        g_hMutex = nullptr;
+    }
     return 0;
 }
