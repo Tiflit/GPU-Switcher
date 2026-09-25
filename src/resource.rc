@@ -1,10 +1,5 @@
 #include "resource.h"
 
-#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
-#define RT_MANIFEST 24
-
-CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
-
 IDI_APP_ICON     ICON "icons/ico/main-rainbow.ico"
 
 IDI_ICON_INTEL   ICON "icons/ico/intel-blue.ico"

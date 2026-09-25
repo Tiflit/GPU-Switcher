@@ -12,12 +12,10 @@ static std::wstring GetLogPath()
     if (!s_cachedPath.empty())
         return s_cachedPath;
 
-    PWSTR localAppData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData)) && localAppData)
+    wchar_t appDataPath[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, appDataPath)))
     {
-        std::filesystem::path dir = std::filesystem::path(localAppData) / L"GPU-Switcher";
-        CoTaskMemFree(localAppData);
-
+        std::filesystem::path dir = std::filesystem::path(appDataPath) / L"GPU-Switcher";
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         if (!ec)

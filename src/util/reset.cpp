@@ -14,6 +14,9 @@ struct AdapterTarget
     DEVINST      inst = 0;
     std::wstring name;
     bool         disabledSuccessfully = false;
+
+    AdapterTarget(DEVINST i, const std::wstring& n, bool d = false)
+        : inst(i), name(n), disabledSuccessfully(d) {}
 };
 
 static std::wstring ConfigRetToString(CONFIGRET cr)

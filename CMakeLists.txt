@@ -20,6 +20,7 @@ add_definitions(-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00)
 add_executable(GPU-Switcher WIN32
     src/main.cpp
     src/resource.rc
+    src/app.manifest
     src/util/logging.cpp
     src/util/startup.cpp
     src/util/reset.cpp
@@ -41,6 +42,7 @@ target_link_libraries(GPU-Switcher PRIVATE
     user32
     gdi32
     advapi32
+    ole32
     d3d11
     dxgi
     cfgmgr32

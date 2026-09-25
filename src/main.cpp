@@ -51,7 +51,7 @@ static bool AcquireDGpu()
     ReleaseDGpu();
 
     ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.GetAddressOf()))))
     {
         LogError(L"CreateDXGIFactory1 failed");
         return false;
@@ -120,9 +120,9 @@ static bool AcquireDGpu()
     HRESULT hr = D3D11CreateDevice(
         bestAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN,
         nullptr, 0,
-        featureLevels, ARRAYSIZE(featureLevels),
+        featureLevels, static_cast<UINT>(ARRAYSIZE(featureLevels)),
         D3D11_SDK_VERSION,
-        &g_device, &level, &g_context);
+        g_device.GetAddressOf(), &level, g_context.GetAddressOf());
 
     if (FAILED(hr))
     {
