@@ -43,13 +43,20 @@ After this, GPU‑Switcher will consistently trigger a dGPU display switch on la
 
 ## Tray icon
 
-Left‑click to see current status.
+- **Dynamic status icon**:
+  - 🟢 **Green**: Active NVIDIA discrete GPU
+  - 🔴 **Red**: Active AMD discrete GPU
+  - 🔵 **Blue**: Active Intel discrete GPU
+  - ⚪ **Grey**: Other / Unknown adapter
+  - 🟡 **Yellow**: Reset in progress or dGPU acquisition warning
 
-Right‑click for options:
+- **Left‑click**: Displays active GPU model and health status balloon.
+- **Hover**: Shows current adapter name and status in the tooltip.
 
-- **Start with Windows** — toggle a `HKCU\...\Run` registry entry
-- **Restart Display Adapters** — perform a ful reset of all display adapters and exit the program → requires UAC
-- **Exit** — release the GPU and remove the tray icon
+- **Right‑click for options**:
+  - **Start with Windows** — toggle a `HKCU\...\Run` registry entry
+  - **Restart Display Adapters** — safely cycles all physical display adapters and automatically re-launches GPU-Switcher → requires UAC
+  - **Exit** — cleanly releases the GPU context and removes the tray icon
 
 ---
 
@@ -97,14 +104,14 @@ The driver hints (`NvOptimusEnablement`) are read once when the process starts. 
 **Standard Optimus (no MUX switch) cannot switch the display**
 On most non-Advanced-Optimus laptops, the iGPU is hardwired to the display panel. GPU‑Switcher will still register the dGPU with the driver and make it visible in NVCP, but no display switch will occur regardless of settings.
 
-**The tray icon does not reflect which GPU is currently driving the display**
-Reliably detecting the active display GPU via DXGI is not possible on Optimus systems — the NVIDIA adapter is always reported regardless of actual display routing. The icon is static by design.
+**The tray icon reflects the acquired dGPU adapter and vendor**
+The tray icon reflects whether a discrete GPU is successfully acquired and running (with vendor color coding) and warns if the device is lost or removed. Note that detecting internal MUX display panel routing via DXGI is not supported by Optimus architecture, so the icon reflects the acquired DirectX device state rather than display panel muxing.
 
 **Rendering stutters after a display switch**
 On some systems, switching display output between GPUs leaves the driver in a partially initialized state and causes rendering stutters. Use **Restart Display Adapters** from the tray menu to resolve this without rebooting.
 
-**"Restart Display Adapters" closes the app**
-Re‑triggering automatic display switching requires a fresh process load, so the app exits. Relaunch manually, or enable "Start with Windows" and log out/in.
+**"Restart Display Adapters" automatically re-launches the app**
+Re-triggering display switching and refreshing adapter state requires cycling the physical graphics devices and reloading. GPU-Switcher safely performs this cycle in an elevated helper, filters out virtual adapters, waits for driver initialization, and automatically re-launches the user tray instance when completed.
 
 **Sleep and wake**
 The app handles sleep/wake cycles by releasing and re‑acquiring the D3D device on resume. This re‑registers the process with the driver. Whether the display switch re‑triggers on resume depends on your system's driver behaviour and is not guaranteed.
