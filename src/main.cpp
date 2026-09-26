@@ -22,6 +22,7 @@ extern "C" {
 
 #define WM_TRAY                 (WM_USER + 1)
 #define WM_RESET_DONE           (WM_USER + 2)
+#define WM_ACTIVATE_INSTANCE    (WM_USER + 3)
 #define TRAY_ID                 1
 #define ID_START_WINDOWS        1001
 #define ID_RESET_DISPLAYS       1002
@@ -454,6 +455,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         return 0;
 
+    case WM_ACTIVATE_INSTANCE:
+    {
+        UpdateTrayStatus();
+        NOTIFYICONDATAW balloon = g_nid;
+        balloon.uFlags      |= NIF_INFO;
+        balloon.dwInfoFlags  = (g_dGpuActive ? NIIF_INFO : NIIF_WARNING) | NIIF_NOSOUND;
+        wcsncpy_s(balloon.szInfoTitle, L"GPU-Switcher", _TRUNCATE);
+        if (g_resetInProgress)
+        {
+            wcsncpy_s(balloon.szInfo, L"Already running (display reset in progress)", _TRUNCATE);
+        }
+        else if (g_dGpuActive)
+        {
+            swprintf_s(balloon.szInfo, L"Already active in system tray.\nGPU: %s", g_activeGpuName.c_str());
+        }
+        else
+        {
+            wcsncpy_s(balloon.szInfo, L"Already running (dGPU inactive)", _TRUNCATE);
+        }
+        Shell_NotifyIconW(NIM_MODIFY, &balloon);
+        return 0;
+    }
+
+    case WM_CLOSE:
+        PostQuitMessage(0);
+        return 0;
+
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
         KillTimer(hwnd, TIMER_HEALTH_CHECK);
@@ -477,16 +505,54 @@ static int RunElevatedReset()
 // Removing the parameter name silences MSVC warning C4100.
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
-    // Check for elevated reset mode first
+    // Check command line arguments first
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     bool resetMode = false;
+    bool exitMode  = false;
+    bool helpMode  = false;
+
     if (argv)
     {
         for (int i = 1; i < argc; ++i)
+        {
             if (_wcsicmp(argv[i], L"--reset-gpu") == 0)
                 resetMode = true;
+            else if (_wcsicmp(argv[i], L"--exit") == 0 || _wcsicmp(argv[i], L"--quit") == 0)
+                exitMode = true;
+            else if (_wcsicmp(argv[i], L"--help") == 0 || _wcsicmp(argv[i], L"-h") == 0 || _wcsicmp(argv[i], L"/?") == 0)
+                helpMode = true;
+        }
         LocalFree(argv);
+    }
+
+    if (helpMode)
+    {
+        MessageBoxW(nullptr,
+            L"GPU-Switcher v" APP_VERSION L"\n\n"
+            L"Usage:\n"
+            L"  GPU-Switcher.exe          Start tray application\n"
+            L"  GPU-Switcher.exe --exit   Gracefully close running instance\n"
+            L"  GPU-Switcher.exe --help   Show this help dialog\n\n"
+            L"Helper Flags:\n"
+            L"  --reset-gpu               Cycle display adapters (elevated helper)",
+            L"GPU-Switcher", MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
+
+    if (exitMode)
+    {
+        HWND hExisting = FindWindowW(L"TrayHookClass", L"GPU-Switcher");
+        if (hExisting)
+        {
+            PostMessageW(hExisting, WM_CLOSE, 0, 0);
+            LogInfo(L"Sent exit request to running GPU-Switcher instance");
+        }
+        else
+        {
+            LogInfo(L"No running GPU-Switcher instance found to exit");
+        }
+        return 0;
     }
 
     if (resetMode)
@@ -504,7 +570,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
-        LogInfo(L"Another instance is already running");
+        LogInfo(L"Another instance is already running — notifying running instance");
+        HWND hExisting = FindWindowW(L"TrayHookClass", L"GPU-Switcher");
+        if (hExisting)
+        {
+            PostMessageW(hExisting, WM_ACTIVATE_INSTANCE, 0, 0);
+        }
         CloseHandle(g_hMutex);
         g_hMutex = nullptr;
         return 0;

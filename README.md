@@ -60,6 +60,16 @@ After this, GPU‑Switcher will consistently trigger a dGPU display switch on la
 
 ---
 
+## Command‑line options
+
+| Option | Description |
+|---|---|
+| *(none)* | Launches the tray utility. If an instance is already running, highlights the active instance in the tray. |
+| `--exit` / `--quit` | Gracefully closes the running GPU-Switcher instance. |
+| `--help` / `-h` | Shows usage instructions and available flags. |
+
+---
+
 ## How it works
 
 On startup, GPU‑Switcher:
