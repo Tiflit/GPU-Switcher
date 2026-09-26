@@ -130,7 +130,7 @@ static bool AcquireDGpu()
 
     HRESULT hr = D3D11CreateDevice(
         bestAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN,
-        nullptr, 0,
+        nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         featureLevels, static_cast<UINT>(ARRAYSIZE(featureLevels)),
         D3D11_SDK_VERSION,
         g_device.GetAddressOf(), &level, g_context.GetAddressOf());
