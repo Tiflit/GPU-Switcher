@@ -1,142 +1,141 @@
 <p align="center">
-  <img src="https://github.com/Tiflit/GPU-Switcher/blob/main/src/icons/png/main-rainbow-128.png" height="90">
+  <img src="https://github.com/Tiflit/GPU-Switcher/blob/main/src/icons/png/main-rainbow-128.png" height="90" alt="GPU-Switcher Logo">
 </p>
 
 <h1 align="center">GPU‑Switcher</h1>
 
-<p align="center"><strong>A lightweight GPU switching utility for Windows</strong></p>
+<p align="center">
+  <strong>A lightweight, zero-overhead GPU switching utility for Windows</strong>
+</p>
 
+<p align="center">
+  <a href="https://github.com/Tiflit/GPU-Switcher/releases"><img src="https://img.shields.io/github/v/release/Tiflit/GPU-Switcher?color=blue" alt="Latest Release"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20(64--bit)-0078D6" alt="Windows 10 / 11 64-bit">
+  <img src="https://img.shields.io/badge/DirectX-D3D11-orange" alt="DirectX 11">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+</p>
 
 &nbsp;
 
+**GPU-Switcher** is a tiny, battery-friendly Windows system tray utility that keeps your laptop's discrete GPU (dGPU) activated with **zero CPU usage** and no background polling threads.
 
-A tiny Windows tray utility that activates the discrete GPU (dGPU), with zero CPU usage and no background threads.
-
-Designed for hybrid GPU laptops with **NVIDIA Advanced Optimus** where you want the dGPU ready without running a heavy application and without configuring every app manually through the driver control panel.
-
-Please let me know if this also works for non-Nvidia display adapters.
+Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus** (or MUX switch systems) where you want the dGPU ready for low-latency gaming, external displays, or 3D workloads without needing to keep a heavy game or benchmark running in the background.
 
 ---
 
-## Requirements
+## Features
 
-- Windows 10 or 11 (64‑bit)
-- Designed and tested for NVIDIA Advanced Optimus capable laptops, but this should work for any hybrid system with a MUX switch supporting on-the-fly dGPU display switching
-- D3D11‑capable discrete GPU
-
----
-
-## One‑time setup
-
-1. Run `GPU-Switcher.exe`
-2. Open **NVIDIA Control Panel**
-3. Go to **Manage 3D settings → Program Settings**
-
-4. Add `GPU-Switcher.exe`
-5. Set **Preferred graphics processor → High‑performance NVIDIA processor**
-6. Enable **Automatic display switching**
-7. Exit and relaunch `GPU-Switcher.exe`
-
-After this, GPU‑Switcher will consistently trigger a dGPU display switch on launch. Right-click on the tray icon to access extra options.
-
----
-
-## Tray icon
-
-- **Dynamic status icon**:
+- ⚡ **Zero Overhead**: Creates a persistent Direct3D 11 device on the dGPU and sleeps in the Windows message pump. No background loops, no telemetry, and 0% CPU consumption.
+- 🎨 **Dynamic Vendor Tray Icons**: Instantly see which GPU is active with color-coded tray icons:
   - 🟢 **Green**: Active NVIDIA discrete GPU
   - 🔴 **Red**: Active AMD discrete GPU
   - 🔵 **Blue**: Active Intel discrete GPU
   - ⚪ **Grey**: Other / Unknown adapter
-  - 🟡 **Yellow**: Reset in progress or dGPU acquisition warning
-
-- **Left‑click**: Displays active GPU model and health status balloon.
-- **Hover**: Shows current adapter name and status in the tooltip.
-
-- **Right‑click for options**:
-  - **Start with Windows** — toggle a `HKCU\...\Run` registry entry
-  - **Restart Display Adapters** — safely cycles all physical display adapters and automatically re-launches GPU-Switcher → requires UAC
-  - **Exit** — cleanly releases the GPU context and removes the tray icon
+  - 🟡 **Yellow**: Display reset in progress or dGPU acquisition warning
+- 🩺 **Live Health Monitoring & Auto-Recovery**: Detects GPU crashes, driver TDR recovery, or disconnected/reconnected eGPUs via `GetDeviceRemovedReason()` and automatically re-acquires the device.
+- 💤 **Non-Blocking Power Management**: Flushes and releases the DirectX context cleanly before sleep (`PBT_APMSUSPEND`), and re-acquires automatically with a brief delay upon system resume without freezing the message loop.
+- 🔄 **Safe Display Adapter Restart**: Safely cycles physical graphics drivers using the Windows Configuration Manager API (`CfgMgr32`), skips virtual/software adapters, and automatically re-launches the tray application when finished.
+- 🖥️ **CLI Controls**: Supports `--exit` / `--quit` for graceful shutdown from scripts or terminals, and `--help` for usage information.
+- 🔔 **Single-Instance Aware**: Launching a duplicate instance highlights and displays the active GPU status balloon from the existing tray process.
+- 🔍 **High-DPI & Per-User Logging**: Full Per-Monitor V2 DPI awareness and rolling diagnostic logs stored safely in `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`.
 
 ---
 
-## Command‑line options
+## Download & Installation
+
+GPU-Switcher is a standalone portable application:
+1. Download the latest `GPU-Switcher-*-windows-x64.zip` from the **[Releases](https://github.com/Tiflit/GPU-Switcher/releases)** page.
+2. Extract `GPU-Switcher.exe` to a permanent location (e.g., `C:\Program Files\GPU-Switcher` or your tools directory).
+3. Run `GPU-Switcher.exe`. It will appear in your notification area (system tray).
+
+---
+
+## One‑Time NVIDIA Optimus Setup
+
+For NVIDIA Advanced Optimus laptops to automatically switch internal display routing to the dGPU on launch:
+
+1. Open **NVIDIA Control Panel**.
+2. Navigate to **Manage 3D settings → Program Settings**.
+3. Click **Add** and select `GPU-Switcher.exe`.
+4. Set **Preferred graphics processor** to **High-performance NVIDIA processor**.
+5. Ensure **Automatic display switching** is enabled in your global display mode settings.
+6. Right-click the tray icon and select **Exit**, then relaunch `GPU-Switcher.exe`.
+
+*After this one-time configuration, launching GPU-Switcher will consistently trigger the discrete GPU display switch.*
+
+---
+
+## Tray Controls
+
+- **Hover**: Displays the active GPU description in the tooltip (e.g. `GPU-Switcher: NVIDIA GeForce RTX 4060 Laptop GPU`).
+- **Left‑click**: Displays a status balloon with the active GPU name and health state.
+- **Right‑click Context Menu**:
+  - **Start with Windows**: Toggles a startup entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+  - **Restart Display Adapters**: Safely cycles physical display adapters via elevated helper to fix rendering stutters, then automatically restarts the utility (requires UAC confirmation).
+  - **Exit**: Cleanly releases the DirectX context and terminates the program.
+
+---
+
+## Command‑Line Options
 
 | Option | Description |
 |---|---|
-| *(none)* | Launches the tray utility. If an instance is already running, highlights the active instance in the tray. |
+| *(none)* | Launches the tray utility. If already running, activates and notifies the existing instance. |
 | `--exit` / `--quit` | Gracefully closes the running GPU-Switcher instance. |
-| `--help` / `-h` | Shows usage instructions and available flags. |
+| `--help` / `-h` / `/?` | Displays the help dialog with available options. |
+| `--reset-gpu` | Helper flag used internally to perform the elevated display adapter reset. |
 
 ---
 
-## How it works
+## How It Works
 
-On startup, GPU‑Switcher:
-
-1. **Exports GPU driver hints** (`NvOptimusEnablement`, `AmdPowerXpressRequestHighPerformance`)
-2. **Creates a persistent D3D11 device** on the adapter with the most dedicated VRAM
-3. **Sits in the system tray** with zero CPU usage.
-
-Exiting releases the D3D device and the driver returns to normal routing.
+1. **Driver Enablement Hints**: Exports documented vendor activation symbols:
+   - `NvOptimusEnablement = 1` (NVIDIA Optimus rendering hint)
+   - `AmdPowerXpressRequestHighPerformance = 1` (AMD PowerXpress hint)
+2. **DXGI Adapter Scoring**: Enumerates all DXGI graphics adapters, filters out software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and scores adapters based on discrete vendor priority (NVIDIA > AMD > Intel) and dedicated video memory (VRAM).
+3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the winning adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
+4. **Event-Driven Architecture**: Runs purely within the standard Win32 message pump, reacting to system power events, taskbar recreation, and device lost notifications with zero resident CPU usage.
 
 ---
 
 ## Compatibility
 
-| System | Behaviour |
-|--------|-----------|
-| NVIDIA Advanced Optimus | Everything should work |
-| Standard Optimus (no MUX) | dGPU will activate but display switch is not available |
-| AMD hybrid | Driver hint is sent; behaviour may vary by OEM |
+| System Type | Behavior |
+|---|---|
+| **NVIDIA Advanced Optimus** | Full dynamic display switching and dGPU activation. |
+| **Standard Optimus (Muxless)** | Activates dGPU; internal display routing remains on iGPU (by hardware design). |
+| **AMD Hybrid / SmartAccess** | Driver hints exported; display switching depends on OEM MUX architecture. |
 
 ---
 
-## Building
+## Building from Source
 
-Requires CMake 3.20+ and Visual Studio / MSVC with Windows SDK.
+Requires CMake 3.20+ and Visual Studio 2019/2022 (MSVC) with the Windows 10/11 SDK.
 
-```
-cmake -B build
+```powershell
+# Clone the repository
+git clone https://github.com/Tiflit/GPU-Switcher.git
+cd GPU-Switcher
+
+# Configure with CMake
+cmake -B build -G "Visual Studio 17 2022" -A x64
+
+# Build Release binary
 cmake --build build --config Release
 ```
 
+The compiled binary will be located at `build/Release/GPU-Switcher.exe` (or `build/GPU-Switcher.exe` if using Ninja).
+
 ---
 
-## Known behaviour and limitations
+## Troubleshooting & Diagnostics
 
-**Display switching requires a one‑time NVCP profile**
-GPU‑Switcher does not switch the display on its own. It registers with the NVIDIA driver, which then triggers switching based on your NVCP profile. Without the profile configured, the app has no effect on display routing.
-
-**The display switch happens at process load, not at runtime**
-The driver hints (`NvOptimusEnablement`) are read once when the process starts. There is no way to trigger or cancel the switch after launch without restarting the app.
-
-**Standard Optimus (no MUX switch) cannot switch the display**
-On most non-Advanced-Optimus laptops, the iGPU is hardwired to the display panel. GPU‑Switcher will still register the dGPU with the driver and make it visible in NVCP, but no display switch will occur regardless of settings.
-
-**The tray icon reflects the acquired dGPU adapter and vendor**
-The tray icon reflects whether a discrete GPU is successfully acquired and running (with vendor color coding) and warns if the device is lost or removed. Note that detecting internal MUX display panel routing via DXGI is not supported by Optimus architecture, so the icon reflects the acquired DirectX device state rather than display panel muxing.
-
-**Rendering stutters after a display switch**
-On some systems, switching display output between GPUs leaves the driver in a partially initialized state and causes rendering stutters. Use **Restart Display Adapters** from the tray menu to resolve this without rebooting.
-
-**"Restart Display Adapters" automatically re-launches the app**
-Re-triggering display switching and refreshing adapter state requires cycling the physical graphics devices and reloading. GPU-Switcher safely performs this cycle in an elevated helper, filters out virtual adapters, waits for driver initialization, and automatically re-launches the user tray instance when completed.
-
-**Sleep and wake**
-The app handles sleep/wake cycles by releasing and re‑acquiring the D3D device on resume. This re‑registers the process with the driver. Whether the display switch re‑triggers on resume depends on your system's driver behaviour and is not guaranteed.
-
-**AMD hybrid systems**
-The `AmdPowerXpressRequestHighPerformance` hint is exported and will be read by AMD drivers, but display switching behaviour on AMD hybrid systems has not been tested and may vary by OEM and driver versions.
-
-**UAC prompt required**
-The app runs almost entirely in user space. The only exception is the Restart Display Adapters feature, which performs a full graphics driver reload. Restarting display adapters requires elevated privileges, so Windows will show a UAC prompt when this option is selected.
-
-**Logging**
-A rolling log file (`%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`, capped at 16 KB) records adapter detection, reset operations, and any errors.
+- **Diagnostic Logs**: A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (capped at 16 KB with automatic rotation). Check this file if a device fails to acquire or to inspect detected adapter scores.
+- **Display Stuttering**: If your laptop panel stutters after switching display modes, use **Restart Display Adapters** from the tray menu to reload the graphics driver stack without rebooting Windows.
+- **Display Not Switching**: Ensure you have configured the program profile in NVIDIA Control Panel under Program Settings as described in the [One-Time Setup](#one-time-nvidia-optimus-setup).
 
 ---
 
 ## License
 
-MIT — do whatever you want, just link back to the original.
+This project is licensed under the [MIT License](LICENSE) — Copyright © 2026 Tiflit.

@@ -1,6 +1,7 @@
 #pragma once
 
-// Performs a full disable/enable cycle on all display adapters.
+// Performs a full disable/enable cycle on physical PCI display adapters,
+// skipping virtual and software display devices.
 // Must be called from an elevated process.
-// Blocks until all adapters are re-enabled.
+// Blocks until all target adapters are re-enabled.
 void CycleAllDisplayAdapters();
