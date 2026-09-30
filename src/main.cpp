@@ -97,6 +97,29 @@ static void SetAppState(AppState newState)
     }
 }
 
+static bool IsAdapterPresent(const LUID& targetLuid)
+{
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.GetAddressOf()))))
+        return false;
+
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
+    {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(adapter->GetDesc1(&desc)))
+        {
+            if (desc.AdapterLuid.LowPart == targetLuid.LowPart &&
+                desc.AdapterLuid.HighPart == targetLuid.HighPart)
+            {
+                return true;
+            }
+        }
+        adapter.Reset();
+    }
+    return false;
+}
+
 static bool EvaluateAdapter(IDXGIAdapter1* pAdapter, GpuCandidate& info)
 {
     if (FAILED(pAdapter->GetDesc1(&info.desc)))
@@ -686,11 +709,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     }
                     else if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
                     {
-                        // Check if preferred discrete GPU reconnected
-                        if (AcquireDGpu())
+                        // Only re-acquire if the preferred discrete GPU has actually reappeared in the topology
+                        if (IsAdapterPresent(g_preferredLuid))
                         {
-                            LogInfo(L"Preferred discrete GPU returned — restored preference");
-                            UpdateTrayStatus();
+                            LogInfo(L"Preferred discrete GPU re-detected in topology — restoring preference");
+                            if (AcquireDGpu())
+                            {
+                                UpdateTrayStatus();
+                            }
                         }
                     }
                 }
@@ -733,11 +759,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 }
                 else if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
                 {
-                    // Periodically test if preferred GPU has re-appeared
-                    if (AcquireDGpu())
+                    // Periodically test if preferred GPU has re-appeared in the topology
+                    if (IsAdapterPresent(g_preferredLuid))
                     {
-                        LogInfo(L"Preferred discrete GPU detected and reacquired during periodic scan");
-                        UpdateTrayStatus();
+                        LogInfo(L"Preferred discrete GPU detected in topology during periodic scan — restoring preference");
+                        if (AcquireDGpu())
+                        {
+                            UpdateTrayStatus();
+                        }
                     }
                 }
             }
