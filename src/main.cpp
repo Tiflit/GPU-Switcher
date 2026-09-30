@@ -13,7 +13,7 @@
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3d11.lib")
 
-#define APP_VERSION L"1.1.0"
+#define APP_VERSION L"1.2.0"
 
 extern "C" {
     __declspec(dllexport) DWORD NvOptimusEnablement                  = 1;
