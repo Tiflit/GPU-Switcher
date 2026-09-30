@@ -5,7 +5,7 @@
 <h1 align="center">GPU‑Switcher</h1>
 
 <p align="center">
-  <strong>A lightweight, zero-overhead GPU switching utility for Windows</strong>
+  <strong>A lightweight, near-zero overhead GPU switching utility for Windows</strong>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 &nbsp;
 
-**GPU-Switcher** is a tiny, battery-friendly Windows system tray utility that keeps your laptop's discrete GPU (dGPU) activated with **zero CPU usage** and no background polling threads.
+**GPU-Switcher** is a tiny, battery-friendly Windows system tray utility that keeps your laptop's discrete GPU (dGPU) activated with **near-zero CPU usage** and no persistent background rendering loops.
 
 Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus** (or MUX switch systems) where you want the dGPU ready for low-latency gaming, external displays, or 3D workloads without needing to keep a heavy game or benchmark running in the background.
 
@@ -25,7 +25,7 @@ Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus** 
 
 ## Features
 
-- ⚡ **Zero Overhead**: Creates a persistent Direct3D 11 device on the dGPU and sleeps in the Windows message pump. No background loops, no telemetry, and 0% CPU consumption.
+- ⚡ **Near-Zero Overhead**: Creates a persistent Direct3D 11 device on the dGPU and sleeps in the Windows message pump. No heavy background worker loops, no telemetry, and virtually 0% CPU consumption.
 - 🎨 **Dynamic Vendor Tray Icons**: Instantly see which GPU is active with color-coded tray icons:
   - 🟢 **Green**: Active NVIDIA discrete GPU
   - 🔴 **Red**: Active AMD discrete GPU
@@ -102,7 +102,7 @@ For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switchin
    - `AmdPowerXpressRequestHighPerformance = 1` (AMD PowerXpress hint)
 2. **Adapter Classification & LUID Tracking**: Enumerates all DXGI adapters, removes software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and classifies discrete candidates (NVIDIA, AMD dGPU, Intel Arc) separate from integrated APUs. Remembers the preferred adapter via its Windows **Locally Unique Identifier (LUID)** so transient disconnects do not trap the system into integrated graphics.
 3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the selected discrete adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
-4. **State-Driven, Zero-Overhead Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation with 0% resident CPU usage.
+4. **State-Driven, Lightweight Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation with negligible resident CPU impact.
 5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles PCI display adapters via CfgMgr32, poll-verifies driver initialization with `CM_Get_DevNode_Status` (`DN_STARTED`, problem code 0), and propagates verified status back to the parent.
 
 ---
