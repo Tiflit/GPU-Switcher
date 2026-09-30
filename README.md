@@ -32,9 +32,9 @@ Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus** 
   - 🔵 **Blue**: Active Intel discrete GPU
   - ⚪ **Grey**: Other / Unknown adapter
   - 🟡 **Yellow**: Display reset in progress or dGPU acquisition warning
-- 🩺 **Live Health Monitoring & eGPU Auto-Recovery**: Tracks discrete adapters by **Locally Unique Identifier (LUID)** and listens for hardware notifications (`WM_DEVICECHANGE` / `DBT_DEVNODES_CHANGED`). If an eGPU is disconnected or driver reset occurs (`GetDeviceRemovedReason()`), the app enters an explicit waiting state without trapping the integrated GPU, and automatically re-acquires the dGPU the instant it reconnects.
+- 🩺 **Live Health Monitoring & eGPU Auto-Recovery**: Tracks discrete adapters by **Locally Unique Identifier (LUID)** and provides event-driven hot-plug detection via `WM_DEVICECHANGE` (`DBT_DEVNODES_CHANGED`) with periodic retry fallback. If an eGPU is disconnected or a driver reset occurs (`GetDeviceRemovedReason()`), the app enters an explicit waiting state without trapping onto integrated graphics, and automatically re-acquires the preferred discrete GPU as soon as hardware re-initialization completes.
 - 💤 **Non-Blocking Power Management**: Flushes and releases the DirectX context cleanly before sleep (`PBT_APMSUSPEND`), and re-acquires automatically with a brief delay upon system resume without freezing the message loop.
-- 🔄 **Verified Display Adapter Restart**: Safely cycles physical graphics drivers using the Windows Configuration Manager API (`CfgMgr32`), skips virtual/software devices, deterministically verifies driver initialization via `CM_Get_DevNode_Status` (`DN_STARTED`), and propagates granular error codes.
+- 🔄 **Verified Display Adapter Restart**: Safely cycles PCI display adapters using the Windows Configuration Manager API (`CfgMgr32`), skips known virtual/software devices, deterministically verifies driver initialization via `CM_Get_DevNode_Status` (`DN_STARTED`), and surfaces partial or failed reset results.
 - 🖥️ **CLI Controls**: Supports `--exit` / `--quit` for graceful shutdown from scripts or terminals, and `--help` for usage information.
 - 🔔 **Single-Instance Aware**: Launching a duplicate instance highlights and displays the active GPU status balloon from the existing tray process.
 - 🔍 **High-DPI & Per-User Logging**: Full Per-Monitor V2 DPI awareness and rolling diagnostic logs stored safely in `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`.
@@ -50,7 +50,7 @@ GPU-Switcher is a standalone portable application:
 
 ---
 
-## One‑Time GPU Preference Setup
+## One-Time GPU Preference Setup
 
 Starting with Windows 10 (version 20H1+) and Windows 11, the operating system's per-application **Graphics Settings** can override driver-level preferences. To ensure your discrete GPU is consistently selected:
 
@@ -103,7 +103,7 @@ For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switchin
 2. **Adapter Classification & LUID Tracking**: Enumerates all DXGI adapters, removes software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and classifies discrete candidates (NVIDIA, AMD dGPU, Intel Arc) separate from integrated APUs. Remembers the preferred adapter via its Windows **Locally Unique Identifier (LUID)** so transient disconnects do not trap the system into integrated graphics.
 3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the selected discrete adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
 4. **State-Driven, Zero-Overhead Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation with 0% resident CPU usage.
-5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles physical PCI display adapters via CfgMgr32, poll-verifies driver initialization with `CM_Get_DevNode_Status` (`DN_STARTED`, problem code 0), and propagates verified status back to the parent.
+5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles PCI display adapters via CfgMgr32, poll-verifies driver initialization with `CM_Get_DevNode_Status` (`DN_STARTED`, problem code 0), and propagates verified status back to the parent.
 
 ---
 
@@ -141,7 +141,7 @@ The compiled binary will be located at `build/Release/GPU-Switcher.exe` (or `bui
 
 - **Diagnostic Logs**: A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (capped at 16 KB with automatic rotation). Check this file if a device fails to acquire or to inspect detected adapter scores.
 - **Display Stuttering**: If your laptop panel stutters after switching display modes, use **Restart Display Adapters** from the tray menu to reload the graphics driver stack without rebooting Windows.
-- **Display Not Switching**: Ensure you have configured the program profile in NVIDIA Control Panel under Program Settings as described in the [One-Time Setup](#one-time-nvidia-optimus-setup).
+- **Display Not Switching**: Ensure you have configured the program profile in Windows Graphics Settings and NVIDIA Control Panel as described in the [One-Time GPU Preference Setup](#one-time-gpu-preference-setup).
 
 ---
 

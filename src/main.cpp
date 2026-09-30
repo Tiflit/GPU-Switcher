@@ -81,6 +81,22 @@ static LUID                                 g_activeLuid        = { 0, 0 };
 static LUID                                 g_preferredLuid     = { 0, 0 };
 static std::wstring                         g_preferredGpuName;
 
+static bool HasPreferredLuid()
+{
+    return (g_preferredLuid.LowPart != 0 || g_preferredLuid.HighPart != 0);
+}
+
+static void SetAppState(AppState newState)
+{
+    if (g_appState != newState)
+    {
+        wchar_t buf[128];
+        swprintf_s(buf, L"State transition: %s -> %s", AppStateToString(g_appState), AppStateToString(newState));
+        LogInfo(buf);
+        g_appState = newState;
+    }
+}
+
 static bool EvaluateAdapter(IDXGIAdapter1* pAdapter, GpuCandidate& info)
 {
     if (FAILED(pAdapter->GetDesc1(&info.desc)))
@@ -157,7 +173,7 @@ static void ReleaseDGpu()
     g_activeLuid = { 0, 0 };
     if (g_appState == AppState::Active)
     {
-        g_appState = AppState::WaitingForDiscreteGpu;
+        SetAppState(AppState::WaitingForDiscreteGpu);
     }
 }
 
@@ -173,7 +189,6 @@ static bool AcquireDGpu()
     }
 
     std::vector<GpuCandidate> discreteCandidates;
-    std::vector<GpuCandidate> allCandidates;
 
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)
@@ -188,7 +203,6 @@ static bool AcquireDGpu()
                 info.isDiscrete ? L"yes" : L"no", info.score);
             LogInfo(logBuf);
 
-            allCandidates.push_back(info);
             if (info.isDiscrete)
             {
                 discreteCandidates.push_back(info);
@@ -199,14 +213,14 @@ static bool AcquireDGpu()
 
     if (discreteCandidates.empty())
     {
-        if (g_preferredLuid.LowPart != 0 || g_preferredLuid.HighPart != 0)
+        if (HasPreferredLuid())
         {
-            g_appState = AppState::WaitingForDiscreteGpu;
+            SetAppState(AppState::WaitingForDiscreteGpu);
             LogInfo(L"Preferred discrete GPU is not present — waiting for reconnection");
         }
         else
         {
-            g_appState = AppState::NoDiscreteGpu;
+            SetAppState(AppState::NoDiscreteGpu);
             LogInfo(L"No discrete GPU detected on the system");
         }
         return false;
@@ -216,7 +230,7 @@ static bool AcquireDGpu()
     // If a preferred LUID was previously tracked, look for an exact match among discrete candidates
     GpuCandidate best;
     bool foundPreferred = false;
-    if (g_preferredLuid.LowPart != 0 || g_preferredLuid.HighPart != 0)
+    if (HasPreferredLuid())
     {
         for (const auto& cand : discreteCandidates)
         {
@@ -225,7 +239,7 @@ static bool AcquireDGpu()
             {
                 best = cand;
                 foundPreferred = true;
-                LogInfo(std::wstring(L"Matched previously selected discrete GPU: ") + best.desc.Description);
+                LogInfo(std::wstring(L"Matched preferred discrete GPU: ") + best.desc.Description);
                 break;
             }
         }
@@ -233,7 +247,7 @@ static bool AcquireDGpu()
 
     if (!foundPreferred)
     {
-        // Pick the highest scoring discrete candidate
+        // Pick the highest scoring discrete candidate (either initial selection, or temporary fallback)
         int bestScore = -1;
         for (const auto& cand : discreteCandidates)
         {
@@ -243,10 +257,18 @@ static bool AcquireDGpu()
                 best = cand;
             }
         }
-        LogInfo(std::wstring(L"Selected target discrete GPU: ") + best.desc.Description);
+
+        if (HasPreferredLuid())
+        {
+            LogInfo(std::wstring(L"Preferred GPU not found — acquiring fallback discrete GPU: ") + best.desc.Description);
+        }
+        else
+        {
+            LogInfo(std::wstring(L"Selected initial preferred discrete GPU: ") + best.desc.Description);
+        }
     }
 
-    g_appState = AppState::Acquiring;
+    SetAppState(AppState::Acquiring);
 
     D3D_FEATURE_LEVEL level = {};
     D3D_FEATURE_LEVEL featureLevels[] = {
@@ -268,19 +290,26 @@ static bool AcquireDGpu()
         wchar_t buf[64];
         swprintf_s(buf, L"D3D11CreateDevice failed: 0x%08X", hr);
         LogError(buf);
-        g_appState = AppState::DeviceLost;
+        SetAppState(AppState::DeviceLost);
         return false;
     }
 
     if (level < D3D_FEATURE_LEVEL_11_0)
         LogError(L"Warning: acquired adapter feature level is below D3D_FEATURE_LEVEL_11_0");
 
-    g_activeVendorId    = best.desc.VendorId;
-    g_activeGpuName     = best.desc.Description;
-    g_activeLuid        = best.luid;
-    g_preferredLuid     = best.luid;
-    g_preferredGpuName  = best.desc.Description;
-    g_appState          = AppState::Active;
+    g_activeVendorId = best.desc.VendorId;
+    g_activeGpuName  = best.desc.Description;
+    g_activeLuid     = best.luid;
+
+    // Establish preferred LUID only on initial selection to prevent preference drift
+    if (!HasPreferredLuid())
+    {
+        g_preferredLuid    = best.luid;
+        g_preferredGpuName = best.desc.Description;
+        LogInfo(std::wstring(L"Established preferred discrete GPU: ") + best.desc.Description);
+    }
+
+    SetAppState(AppState::Active);
 
     LogInfo(std::wstring(L"Successfully initialized D3D11 device on: ") + best.desc.Description);
     return true;
@@ -336,7 +365,14 @@ static void UpdateTrayStatus(const wchar_t* customTip = nullptr)
         switch (g_appState)
         {
         case AppState::Active:
-            swprintf_s(g_nid.szTip, L"GPU-Switcher: %s (Active)", g_activeGpuName.c_str());
+            if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
+            {
+                swprintf_s(g_nid.szTip, L"GPU-Switcher: %s (Fallback)", g_activeGpuName.c_str());
+            }
+            else
+            {
+                swprintf_s(g_nid.szTip, L"GPU-Switcher: %s (Active)", g_activeGpuName.c_str());
+            }
             break;
         case AppState::Resetting:
             wcsncpy_s(g_nid.szTip, L"GPU-Switcher: Restarting display adapters…", _TRUNCATE);
@@ -407,7 +443,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     wchar_t buf[128];
                     swprintf_s(buf, L"D3D11 device lost (0x%08X) — re-acquiring", hr);
                     LogError(buf);
-                    g_appState = AppState::DeviceLost;
+                    SetAppState(AppState::DeviceLost);
                     AcquireDGpu();
                     UpdateTrayStatus();
                 }
@@ -421,7 +457,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             switch (g_appState)
             {
             case AppState::Active:
-                swprintf_s(balloon.szInfo, L"Active discrete GPU:\n%s", g_activeGpuName.c_str());
+                if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
+                {
+                    swprintf_s(balloon.szInfo, L"Active discrete GPU (Fallback):\n%s\n\nPreferred GPU:\n%s",
+                        g_activeGpuName.c_str(), g_preferredGpuName.c_str());
+                }
+                else
+                {
+                    swprintf_s(balloon.szInfo, L"Active discrete GPU:\n%s", g_activeGpuName.c_str());
+                }
                 break;
             case AppState::Resetting:
                 wcsncpy_s(balloon.szInfo, L"Display adapter restart in progress…", _TRUNCATE);
@@ -483,7 +527,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (g_appState == AppState::Resetting)
                     break;
 
-                g_appState = AppState::Resetting;
+                SetAppState(AppState::Resetting);
                 UpdateTrayStatus(L"GPU-Switcher: Restarting display adapters…");
                 LogInfo(L"Restart Display Adapters requested");
 
@@ -504,7 +548,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (!ShellExecuteExW(&sei) || !sei.hProcess)
                 {
                     LogInfo(L"Elevated launch cancelled or failed — reacquiring dGPU");
-                    g_appState = AppState::DeviceLost;
+                    SetAppState(AppState::DeviceLost);
                     AcquireDGpu();
                     UpdateTrayStatus();
                     break;
@@ -545,9 +589,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         DWORD resetExitCode = static_cast<DWORD>(wParam);
         ResetResult res = static_cast<ResetResult>(resetExitCode);
 
-        if (res == ResetResult::Success || res == ResetResult::PartialDisable)
+        if (res == ResetResult::Success)
         {
-            LogInfo(std::wstring(L"Elevated reset completed (") + ResetResultToString(res) + L") — re-launching GPU-Switcher and exiting");
+            LogInfo(L"Elevated reset completed successfully — re-launching GPU-Switcher and exiting");
             Shell_NotifyIconW(NIM_DELETE, &g_nid);
 
             if (g_hMutex)
@@ -575,20 +619,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else
         {
             wchar_t errBuf[256];
-            swprintf_s(errBuf, L"Display adapter reset finished with error: %s (code %u)",
+            swprintf_s(errBuf, L"Display adapter reset finished with non-success status: %s (code %u)",
                 ResetResultToString(res), resetExitCode);
             LogError(errBuf);
 
-            g_appState = AppState::DeviceLost;
+            SetAppState(AppState::DeviceLost);
             AcquireDGpu();
             UpdateTrayStatus();
 
             NOTIFYICONDATAW balloon = g_nid;
             balloon.uFlags      |= NIF_INFO;
             balloon.dwInfoFlags  = NIIF_WARNING | NIIF_NOSOUND;
-            wcsncpy_s(balloon.szInfoTitle, L"GPU-Switcher: Reset Warning", _TRUNCATE);
-            swprintf_s(balloon.szInfo, L"Adapter reset completed with warning: %s (code %u). Check log for details.",
-                ResetResultToString(res), resetExitCode);
+            wcsncpy_s(balloon.szInfoTitle, L"GPU-Switcher: Reset Incomplete", _TRUNCATE);
+
+            if (res == ResetResult::PartialDisable)
+            {
+                wcsncpy_s(balloon.szInfo,
+                    L"One or more display adapters could not be disabled. The reset was only partially applied.",
+                    _TRUNCATE);
+            }
+            else
+            {
+                swprintf_s(balloon.szInfo,
+                    L"Adapter reset failed with status: %s (code %u). Check log for details.",
+                    ResetResultToString(res), resetExitCode);
+            }
             Shell_NotifyIconW(NIM_MODIFY, &balloon);
         }
         return 0;
@@ -625,9 +680,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                         wchar_t buf[128];
                         swprintf_s(buf, L"D3D11 device lost on devnodes change (0x%08X) — re-acquiring", hr);
                         LogError(buf);
-                        g_appState = AppState::DeviceLost;
+                        SetAppState(AppState::DeviceLost);
                         AcquireDGpu();
                         UpdateTrayStatus();
+                    }
+                    else if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
+                    {
+                        // Check if preferred discrete GPU reconnected
+                        if (AcquireDGpu())
+                        {
+                            LogInfo(L"Preferred discrete GPU returned — restored preference");
+                            UpdateTrayStatus();
+                        }
                     }
                 }
                 else
@@ -663,9 +727,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     wchar_t buf[128];
                     swprintf_s(buf, L"D3D11 device removed or lost (0x%08X) — re-acquiring", hr);
                     LogError(buf);
-                    g_appState = AppState::DeviceLost;
+                    SetAppState(AppState::DeviceLost);
                     AcquireDGpu();
                     UpdateTrayStatus();
+                }
+                else if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
+                {
+                    // Periodically test if preferred GPU has re-appeared
+                    if (AcquireDGpu())
+                    {
+                        LogInfo(L"Preferred discrete GPU detected and reacquired during periodic scan");
+                        UpdateTrayStatus();
+                    }
                 }
             }
             else if (g_appState == AppState::WaitingForDiscreteGpu ||
@@ -692,7 +765,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         switch (g_appState)
         {
         case AppState::Active:
-            swprintf_s(balloon.szInfo, L"Already active in system tray.\nGPU: %s", g_activeGpuName.c_str());
+            if (HasPreferredLuid() && (g_activeLuid.LowPart != g_preferredLuid.LowPart || g_activeLuid.HighPart != g_preferredLuid.HighPart))
+            {
+                swprintf_s(balloon.szInfo, L"Already active in system tray.\nGPU (Fallback): %s\n(Preferred: %s)",
+                    g_activeGpuName.c_str(), g_preferredGpuName.c_str());
+            }
+            else
+            {
+                swprintf_s(balloon.szInfo, L"Already active in system tray.\nGPU: %s", g_activeGpuName.c_str());
+            }
             break;
         case AppState::Resetting:
             wcsncpy_s(balloon.szInfo, L"Already running (display reset in progress)", _TRUNCATE);

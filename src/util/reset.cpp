@@ -120,7 +120,7 @@ ResetResult CycleAllDisplayAdapters()
                 }
             }
 
-            // Query hardware ID to distinguish physical PCI graphics cards from virtual/software adapters
+            // Query hardware ID to distinguish PCI graphics cards from virtual/software adapters
             wchar_t hwId[512] = {};
             ULONG hwIdLen = sizeof(hwId);
             CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, hwId, &hwIdLen, 0);
@@ -130,7 +130,7 @@ ResetResult CycleAllDisplayAdapters()
                 devName, p, hwId[0] ? hwId : L"(none)");
             LogInfo(logBuf);
 
-            // Only target physical PCI display devices (e.g. PCI\VEN_10DE, PCI\VEN_1002, PCI\VEN_8086)
+            // Target PCI display adapters (e.g. PCI\VEN_10DE, PCI\VEN_1002, PCI\VEN_8086)
             // Skip non-PCI devices (ROOT\, SWD\, USB\) and Microsoft Basic Display Adapter (VEN_1414)
             if (_wcsnicmp(p, L"PCI\\", 4) != 0 && _wcsnicmp(hwId, L"PCI\\", 4) != 0)
             {
@@ -267,7 +267,7 @@ ResetResult CycleAllDisplayAdapters()
     }
     if (hadDisableFailure)
     {
-        LogInfo(L"Adapter cycle completed: some adapters were not disabled, but all targets verified");
+        LogError(L"Adapter cycle completed with warning: one or more adapters could not be disabled; only successfully disabled adapters were cycled and verified");
         return ResetResult::PartialDisable;
     }
 

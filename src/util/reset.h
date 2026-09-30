@@ -13,9 +13,9 @@ enum class ResetResult : int
 // Returns a human-readable string representation of a ResetResult code.
 const wchar_t* ResetResultToString(ResetResult res);
 
-// Performs a full disable/enable cycle on physical PCI display adapters,
-// skipping virtual and software display devices.
+// Performs a full disable/enable cycle on targeted PCI display adapters,
+// skipping known virtual and software display devices.
 // Must be called from an elevated process.
-// Verifies via CM_Get_DevNode_Status that all adapters are started with no problem code.
+// Verifies via CM_Get_DevNode_Status that successfully cycled adapters are started with no problem code.
 // Blocks until all target adapters are processed and verified.
 ResetResult CycleAllDisplayAdapters();
