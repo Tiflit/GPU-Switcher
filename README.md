@@ -32,9 +32,9 @@ Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus** 
   - 🔵 **Blue**: Active Intel discrete GPU
   - ⚪ **Grey**: Other / Unknown adapter
   - 🟡 **Yellow**: Display reset in progress or dGPU acquisition warning
-- 🩺 **Live Health Monitoring & Auto-Recovery**: Detects GPU crashes, driver TDR recovery, or disconnected/reconnected eGPUs via `GetDeviceRemovedReason()` and automatically re-acquires the device.
+- 🩺 **Live Health Monitoring & eGPU Auto-Recovery**: Tracks discrete adapters by **Locally Unique Identifier (LUID)** and listens for hardware notifications (`WM_DEVICECHANGE` / `DBT_DEVNODES_CHANGED`). If an eGPU is disconnected or driver reset occurs (`GetDeviceRemovedReason()`), the app enters an explicit waiting state without trapping the integrated GPU, and automatically re-acquires the dGPU the instant it reconnects.
 - 💤 **Non-Blocking Power Management**: Flushes and releases the DirectX context cleanly before sleep (`PBT_APMSUSPEND`), and re-acquires automatically with a brief delay upon system resume without freezing the message loop.
-- 🔄 **Safe Display Adapter Restart**: Safely cycles physical graphics drivers using the Windows Configuration Manager API (`CfgMgr32`), skips virtual/software adapters, and automatically re-launches the tray application when finished.
+- 🔄 **Verified Display Adapter Restart**: Safely cycles physical graphics drivers using the Windows Configuration Manager API (`CfgMgr32`), skips virtual/software devices, deterministically verifies driver initialization via `CM_Get_DevNode_Status` (`DN_STARTED`), and propagates granular error codes.
 - 🖥️ **CLI Controls**: Supports `--exit` / `--quit` for graceful shutdown from scripts or terminals, and `--help` for usage information.
 - 🔔 **Single-Instance Aware**: Launching a duplicate instance highlights and displays the active GPU status balloon from the existing tray process.
 - 🔍 **High-DPI & Per-User Logging**: Full Per-Monitor V2 DPI awareness and rolling diagnostic logs stored safely in `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`.
@@ -50,10 +50,18 @@ GPU-Switcher is a standalone portable application:
 
 ---
 
-## One‑Time NVIDIA Optimus Setup
+## One‑Time GPU Preference Setup
 
-For NVIDIA Advanced Optimus laptops to automatically switch internal display routing to the dGPU on launch:
+Starting with Windows 10 (version 20H1+) and Windows 11, the operating system's per-application **Graphics Settings** can override driver-level preferences. To ensure your discrete GPU is consistently selected:
 
+### Step 1: Windows Graphics Settings (Recommended)
+1. Open Windows **Settings → System → Display → Graphics** (or search "Graphics Settings" in the Start menu).
+2. Under **Custom options for apps**, click **Browse** and select `GPU-Switcher.exe`.
+3. Click **Options** on the newly added entry and select **High performance** (identifying your discrete GPU, e.g. NVIDIA / AMD / Intel Arc).
+4. Click **Save**.
+
+### Step 2: NVIDIA Control Panel (for Advanced Optimus laptops)
+For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switching on launch:
 1. Open **NVIDIA Control Panel**.
 2. Navigate to **Manage 3D settings → Program Settings**.
 3. Click **Add** and select `GPU-Switcher.exe`.
@@ -61,7 +69,7 @@ For NVIDIA Advanced Optimus laptops to automatically switch internal display rou
 5. Ensure **Automatic display switching** is enabled in your global display mode settings.
 6. Right-click the tray icon and select **Exit**, then relaunch `GPU-Switcher.exe`.
 
-*After this one-time configuration, launching GPU-Switcher will consistently trigger the discrete GPU display switch.*
+*After this one-time configuration, launching GPU-Switcher will consistently trigger discrete GPU pinning and Advanced Optimus display switching.*
 
 ---
 
@@ -92,9 +100,10 @@ For NVIDIA Advanced Optimus laptops to automatically switch internal display rou
 1. **Driver Enablement Hints**: Exports documented vendor activation symbols:
    - `NvOptimusEnablement = 1` (NVIDIA Optimus rendering hint)
    - `AmdPowerXpressRequestHighPerformance = 1` (AMD PowerXpress hint)
-2. **DXGI Adapter Scoring**: Enumerates all DXGI graphics adapters, filters out software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and scores adapters based on discrete vendor priority (NVIDIA > AMD > Intel) and dedicated video memory (VRAM).
-3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the winning adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
-4. **Event-Driven Architecture**: Runs purely within the standard Win32 message pump, reacting to system power events, taskbar recreation, and device lost notifications with zero resident CPU usage.
+2. **Adapter Classification & LUID Tracking**: Enumerates all DXGI adapters, removes software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and classifies discrete candidates (NVIDIA, AMD dGPU, Intel Arc) separate from integrated APUs. Remembers the preferred adapter via its Windows **Locally Unique Identifier (LUID)** so transient disconnects do not trap the system into integrated graphics.
+3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the selected discrete adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
+4. **State-Driven, Zero-Overhead Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation with 0% resident CPU usage.
+5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles physical PCI display adapters via CfgMgr32, poll-verifies driver initialization with `CM_Get_DevNode_Status` (`DN_STARTED`, problem code 0), and propagates verified status back to the parent.
 
 ---
 
