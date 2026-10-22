@@ -50,9 +50,9 @@ by the actual acquisition path; the tests do not simulate Windows message delive
 
 ## Recorded hardware baseline
 
-See [Legion results for build e147067](LEGION-VALIDATION-2026-10-22.md). Later
-power-transition changes require another sleep/resume check; the baseline must
-not be attributed to those later commits.
+See [Legion results for build e147067](LEGION-VALIDATION-2026-10-22.md). The report separately records the successful 1893b60 power-gate retest and an
+unresolved report of LockApp retaining NVIDIA activity after Exit. Panel return
+to Intel and complete dGPU inactivity are distinct results.
 
 ## Legion hardware checks
 

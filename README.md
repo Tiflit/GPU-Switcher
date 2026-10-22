@@ -150,6 +150,7 @@ Run the acquisition regression tests with `ctest --test-dir build -C Release --o
 
 - **Diagnostic Logs**: Use **View Log** in the tray menu. Startup records the version and build commit (or `unknown` when built without Git metadata). A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (capped at 16 KB with automatic rotation). Check this file if a device fails to acquire or to inspect detected adapter scores.
 - **Display Stuttering**: If your laptop panel stutters after switching display modes, use **Restart Display Adapters** from the tray menu to reload the graphics driver stack without rebooting Windows.
+- **NVIDIA Still Active After Exit**: Returning the panel to Intel does not ensure the NVIDIA GPU becomes inactive. Other programs can retain GPU contexts; LockApp was reported in the Legion test. GPU-Switcher releases its own device but does not migrate other programs or automatically reset adapters on exit. See the [validation report](docs/LEGION-VALIDATION-2026-10-22.md).
 - **Display Not Switching**: Ensure you have configured the program profile in Windows Graphics Settings and NVIDIA Control Panel as described in the [One-Time GPU Preference Setup](#one-time-gpu-preference-setup).
 
 ---

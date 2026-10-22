@@ -53,8 +53,51 @@ in the final 12:38 test, but the observed ordering motivates a power-transition
 guard: ordinary acquisition is blocked from suspend notification until the
 resume delay completes. Duplicate resume notifications share one delay.
 
-That guard is a **later change**, not part of the hardware-validated build above.
-Its automated regressions do not replace another Legion sleep/resume check.
+That guard is a **later change**, not part of the e147067 baseline above.
+The subsequent 1893b60 hardware check is recorded below.
+
+## Power-gate retest: build 1893b6083278
+
+The user tested the new artifact without performing a reset afterward. The
+additional snapshot `gpu_switcher(5).log` identifies the executable as
+`1893b6083278` (full commit `1893b6083278b1b3857bb4b21eb6bfbee813fe6d`).
+
+| Time | Log evidence |
+| --- | --- |
+| 12:49:37 | New build started. |
+| 12:49:45 | NVIDIA D3D11 device active. |
+| 12:50:21 | Suspend notification; device released. |
+| 12:50:31 | One resume scheduling entry. |
+| 12:50:32 | One delayed reacquisition; device active again. |
+| 12:50:50 | Release transition and clean exit. |
+
+The user reported successful launch, sleep/resume, and panel return to Intel on
+Exit. There is no periodic-scan acquisition before the resume timer in this
+cycle. This validates that successful path on this laptop, not every possible
+Windows event ordering.
+
+## Unresolved NVIDIA activity attributed to LockApp
+
+The user observed `lockapp.exe` using the NVIDIA GPU after sleep/resume and Exit,
+even though the panel returned to Intel. This happened both before and after the
+power-gate change. The pre-update reset at 12:41 succeeded in 6953 ms, with both
+adapters verified after their first enable requests. The user reported that
+resetting then exiting cleared NVIDIA activity. No reset was performed after the
+1893b60 test, so the outstanding LockApp state was preserved for investigation.
+
+The application log does not enumerate foreign GPU clients or measure hardware
+power state. It therefore cannot establish that LockApp is the sole reason for
+residual GPU activity, how its adapter selection arose, or whether GPU-Switcher
+or the Windows/driver transition caused that selection. A display reset affects
+all clients; its clearing the condition does not prove a leaked GPU-Switcher
+context. Full dGPU inactivity after Exit must remain **unverified/unresolved**
+when another client is reported active.
+
+Next controlled comparison: after a normal Windows restart, observe LockApp and
+NVIDIA activity through a lock/unlock or sleep/resume cycle without first running
+GPU-Switcher. Compare against the same sequence with GPU-Switcher. Keep the
+working application profile unchanged. Do not add automatic adapter resets or
+terminate LockApp as part of ordinary Exit on the basis of this evidence.
 
 ## Scope and remaining validation
 
