@@ -47,3 +47,10 @@ target_link_libraries(GPU-Switcher PRIVATE
     dxgi
     cfgmgr32
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(acquisition_tests tests/acquisition_tests.cpp)
+    target_include_directories(acquisition_tests PRIVATE src)
+    add_test(NAME acquisition_regressions COMMAND acquisition_tests)
+endif()

@@ -9,6 +9,10 @@
 
 #pragma comment(lib, "cfgmgr32.lib")
 
+#ifndef DN_STARTED
+#define DN_STARTED 0x00000008
+#endif
+
 struct AdapterTarget
 {
     DEVINST      inst = 0;
@@ -19,6 +23,20 @@ struct AdapterTarget
     AdapterTarget(DEVINST i, const std::wstring& n, const std::wstring& id, bool d = false)
         : inst(i), name(n), instanceId(id), disabledSuccessfully(d) {}
 };
+
+const wchar_t* ResetResultToString(ResetResult res)
+{
+    switch (res)
+    {
+    case ResetResult::Success:           return L"Success";
+    case ResetResult::EnumerationFailed: return L"EnumerationFailed";
+    case ResetResult::NoAdaptersFound:   return L"NoAdaptersFound";
+    case ResetResult::PartialDisable:    return L"PartialDisable";
+    case ResetResult::EnableFailed:      return L"EnableFailed";
+    case ResetResult::VerifyFailed:      return L"VerifyFailed";
+    default:                             return L"Unknown";
+    }
+}
 
 static std::wstring ConfigRetToString(CONFIGRET cr)
 {
@@ -38,7 +56,7 @@ static std::wstring ConfigRetToString(CONFIGRET cr)
     }
 }
 
-void CycleAllDisplayAdapters()
+ResetResult CycleAllDisplayAdapters()
 {
     std::vector<AdapterTarget> adapters;
 
@@ -51,7 +69,7 @@ void CycleAllDisplayAdapters()
         ) != CR_SUCCESS || len == 0)
     {
         LogError(L"CM_Get_Device_ID_List_Size failed");
-        return;
+        return ResetResult::EnumerationFailed;
     }
 
     // 2. Retrieve multi-string list of device instance IDs
@@ -64,7 +82,7 @@ void CycleAllDisplayAdapters()
         ) != CR_SUCCESS)
     {
         LogError(L"CM_Get_Device_ID_List failed");
-        return;
+        return ResetResult::EnumerationFailed;
     }
 
     // 3. Filter for display class: GUID_DEVCLASS_DISPLAY {4d36e968-e325-11ce-bfc1-08002be10318}
@@ -102,7 +120,7 @@ void CycleAllDisplayAdapters()
                 }
             }
 
-            // Query hardware ID to distinguish physical PCI graphics cards from virtual/software adapters
+            // Query hardware ID to distinguish PCI graphics cards from virtual/software adapters
             wchar_t hwId[512] = {};
             ULONG hwIdLen = sizeof(hwId);
             CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, hwId, &hwIdLen, 0);
@@ -112,7 +130,7 @@ void CycleAllDisplayAdapters()
                 devName, p, hwId[0] ? hwId : L"(none)");
             LogInfo(logBuf);
 
-            // Only target physical PCI display devices (e.g. PCI\VEN_10DE, PCI\VEN_1002, PCI\VEN_8086)
+            // Target PCI display adapters (e.g. PCI\VEN_10DE, PCI\VEN_1002, PCI\VEN_8086)
             // Skip non-PCI devices (ROOT\, SWD\, USB\) and Microsoft Basic Display Adapter (VEN_1414)
             if (_wcsnicmp(p, L"PCI\\", 4) != 0 && _wcsnicmp(hwId, L"PCI\\", 4) != 0)
             {
@@ -133,14 +151,15 @@ void CycleAllDisplayAdapters()
     if (adapters.empty())
     {
         LogError(L"No physical PCI display adapters found for reset");
-        return;
+        return ResetResult::NoAdaptersFound;
     }
 
     LogInfo(std::wstring(L"Beginning reset of ") + std::to_wstring(adapters.size()) + L" display adapter(s):");
     for (const auto& a : adapters)
         LogInfo(L"  - Target: " + a.name + L" (" + a.instanceId + L")");
 
-    // 4. Disable display adapters and verify status
+    // 4. Disable display adapters and track results
+    bool hadDisableFailure = false;
     for (auto& a : adapters)
     {
         LogInfo(L"Disabling: " + a.name + L" (" + a.instanceId + L")");
@@ -152,6 +171,7 @@ void CycleAllDisplayAdapters()
         }
         else
         {
+            hadDisableFailure = true;
             LogError(L"Failed to disable " + a.name + L" — " + ConfigRetToString(cr));
         }
     }
@@ -159,6 +179,7 @@ void CycleAllDisplayAdapters()
     Sleep(2000); // Allow driver unload
 
     // 5. Re-enable display adapters with retry logic
+    bool hadEnableFailure = false;
     LogInfo(L"Re-enabling display adapters...");
     for (auto& a : adapters)
     {
@@ -181,14 +202,75 @@ void CycleAllDisplayAdapters()
 
         if (cr == CR_SUCCESS)
         {
-            LogInfo(L"Successfully re-enabled: " + a.name);
+            LogInfo(L"Successfully requested enable for: " + a.name);
         }
         else
         {
+            hadEnableFailure = true;
             LogError(L"CRITICAL: Failed to re-enable " + a.name + L" — " + ConfigRetToString(cr));
         }
     }
 
-    Sleep(1500); // Allow driver re-initialization
-    LogInfo(L"Adapter cycle completed");
+    // 6. Deterministic verification: poll CM_Get_DevNode_Status until DN_STARTED with problem == 0
+    bool hadVerifyFailure = false;
+    LogInfo(L"Verifying device startup status with CM_Get_DevNode_Status...");
+    for (auto& a : adapters)
+    {
+        if (!a.disabledSuccessfully)
+            continue;
+
+        bool started = false;
+        ULONG status = 0;
+        ULONG problem = 0;
+
+        // Poll for up to 3000ms (15 iterations x 200ms) for driver initialization
+        for (int attempt = 0; attempt < 15; ++attempt)
+        {
+            Sleep(200);
+            CONFIGRET cr = CM_Get_DevNode_Status(&status, &problem, a.inst, 0);
+            if (cr == CR_SUCCESS)
+            {
+                if ((status & DN_STARTED) != 0 && problem == 0)
+                {
+                    started = true;
+                    break;
+                }
+            }
+        }
+
+        if (started)
+        {
+            wchar_t logBuf[256];
+            swprintf_s(logBuf, L"Verified %s started successfully (Status: 0x%08X, Problem: %u)",
+                a.name.c_str(), status, problem);
+            LogInfo(logBuf);
+        }
+        else
+        {
+            hadVerifyFailure = true;
+            wchar_t errBuf[256];
+            swprintf_s(errBuf, L"CRITICAL: Verification failed for %s (Status: 0x%08X, Problem: %u)",
+                a.name.c_str(), status, problem);
+            LogError(errBuf);
+        }
+    }
+
+    if (hadEnableFailure)
+    {
+        LogError(L"Adapter cycle completed with errors: one or more adapters failed to re-enable");
+        return ResetResult::EnableFailed;
+    }
+    if (hadVerifyFailure)
+    {
+        LogError(L"Adapter cycle completed with errors: one or more adapters failed verification");
+        return ResetResult::VerifyFailed;
+    }
+    if (hadDisableFailure)
+    {
+        LogError(L"Adapter cycle completed with warning: one or more adapters could not be disabled; only successfully disabled adapters were cycled and verified");
+        return ResetResult::PartialDisable;
+    }
+
+    LogInfo(L"Adapter cycle completed successfully: all display adapters restarted and verified");
+    return ResetResult::Success;
 }
