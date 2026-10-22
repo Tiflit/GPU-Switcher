@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <string>
 
-static std::wstring GetLogPath()
+std::wstring GetLogPath()
 {
     static std::wstring s_cachedPath;
     if (!s_cachedPath.empty())
@@ -56,8 +56,12 @@ static void WriteLog(const wchar_t* level, const std::wstring& msg)
     int utf8Len = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (utf8Len <= 1) return;
 
-    std::string utf8Str(utf8Len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, &utf8Str[0], utf8Len - 1, nullptr, nullptr);
+    // Both calls use -1, so the required size includes the terminating null.
+    std::string utf8Str(utf8Len, '\0');
+    int bytesWritten = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
+        utf8Str.data(), utf8Len, nullptr, nullptr);
+    if (bytesWritten != utf8Len) return;
+    utf8Str.resize(bytesWritten - 1); // Do not write the terminator to the log.
 
     {
         std::ofstream out(logPath, std::ios::app | std::ios::binary);

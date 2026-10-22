@@ -10,8 +10,8 @@ IDI_ICON_UNKNOWN ICON "icons/ico/unknown-grey.ico"
 IDI_ICON_WARNING ICON "icons/ico/warning-yellow.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,1,0,0
-PRODUCTVERSION  1,1,0,0
+FILEVERSION     1,2,0,0
+PRODUCTVERSION  1,2,0,0
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 #ifdef _DEBUG
 FILEFLAGS       VS_FF_DEBUG
@@ -28,12 +28,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Tiflit"
             VALUE "FileDescription",  "GPU-Switcher - Discrete GPU Activator"
-            VALUE "FileVersion",      "1.1.0.0"
+            VALUE "FileVersion",      "1.2.0.0"
             VALUE "InternalName",     "GPU-Switcher"
             VALUE "LegalCopyright",   "Copyright (C) 2026"
             VALUE "OriginalFilename", "GPU-Switcher.exe"
             VALUE "ProductName",      "GPU-Switcher"
-            VALUE "ProductVersion",   "1.1.0.0"
+            VALUE "ProductVersion",   "1.2.0.0"
         END
     END
     BLOCK "VarFileInfo"
