@@ -708,29 +708,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (res == ResetResult::Success)
         {
-            LogInfo(L"Elevated reset completed successfully — re-launching GPU-Switcher and exiting");
-            Shell_NotifyIconW(NIM_DELETE, &g_nid);
-
-            if (g_hMutex)
-            {
-                CloseHandle(g_hMutex);
-                g_hMutex = nullptr;
-            }
-
-            wchar_t exePath[MAX_PATH] = {};
-            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0)
-            {
-                HINSTANCE hInstApp = ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_SHOWNORMAL);
-                if (reinterpret_cast<INT_PTR>(hInstApp) <= 32)
-                {
-                    LogError(L"Failed to re-launch GPU-Switcher after reset");
-                }
-                else
-                {
-                    LogInfo(L"Successfully re-launched GPU-Switcher instance");
-                }
-            }
-
+            // A reset is an explicit request to clear GPU clients and leave the
+            // dGPU available to sleep. Normal shutdown below releases our device
+            // and mutex; launching a replacement process would pin it again.
+            LogInfo(L"Elevated reset completed successfully — exiting GPU-Switcher without relaunch");
             PostQuitMessage(0);
         }
         else

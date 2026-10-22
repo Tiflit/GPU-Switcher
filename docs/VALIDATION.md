@@ -51,7 +51,7 @@ by the actual acquisition path; the tests do not simulate Windows message delive
 ## Recorded hardware baseline
 
 See [Legion results for build e147067](LEGION-VALIDATION-2026-10-22.md). The report separately records the successful 1893b60 power-gate retest and an
-unresolved report of LockApp retaining NVIDIA activity after Exit. Panel return
+expected report of LockApp retaining NVIDIA activity after ordinary Exit. Panel return
 to Intel and complete dGPU inactivity are distinct results.
 
 ## Legion hardware checks
@@ -73,10 +73,11 @@ Use **View Log** and save the log after each independent test from
 4. **Cancel reset:** select Restart Display Adapters and cancel UAC. Confirm the
    utility reacquires its device and remains usable.
 5. **Display reset:** with work saved and graphics workloads closed, request a
-   reset. Success should verify every successfully cycled target and relaunch
-   the utility. Partial/failure status should keep the tray instance alive and
-   report the incomplete reset. Save the log; do not infer success from the icon
-   alone.
+   reset. Success should verify every successfully cycled target and exit the
+   utility without launching a replacement. Confirm the icon and process disappear,
+   then check whether the NVIDIA GPU becomes inactive. Partial/failure status
+   should keep the tray instance alive and report the incomplete reset. Save the
+   log; do not infer GPU inactivity from panel routing alone.
 6. **Resume followed by reset:** verify from the log that a resume timer does not
    create a D3D11 device while the helper is resetting adapters. A timer already
    queued when reset starts must also be ignored.

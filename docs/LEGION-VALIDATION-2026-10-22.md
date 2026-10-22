@@ -76,28 +76,32 @@ Exit. There is no periodic-scan acquisition before the resume timer in this
 cycle. This validates that successful path on this laptop, not every possible
 Windows event ordering.
 
-## Unresolved NVIDIA activity attributed to LockApp
+## LockApp and intended reset semantics — user clarification
 
-The user observed `lockapp.exe` using the NVIDIA GPU after sleep/resume and Exit,
-even though the panel returned to Intel. This happened both before and after the
-power-gate change. The pre-update reset at 12:41 succeeded in 6953 ms, with both
-adapters verified after their first enable requests. The user reported that
-resetting then exiting cleared NVIDIA activity. No reset was performed after the
-1893b60 test, so the outstanding LockApp state was preserved for investigation.
+The user observed `lockapp.exe` using NVIDIA after sleep/resume and ordinary
+Exit, while the panel returned to Intel. This happened on both tested builds.
+The pre-update reset at 12:41 succeeded in 6953 ms, with both adapters verified
+after their first enable requests. Resetting then exiting cleared NVIDIA activity
+in the user's test.
 
-The application log does not enumerate foreign GPU clients or measure hardware
-power state. It therefore cannot establish that LockApp is the sole reason for
-residual GPU activity, how its adapter selection arose, or whether GPU-Switcher
-or the Windows/driver transition caused that selection. A display reset affects
-all clients; its clearing the condition does not prove a leaked GPU-Switcher
-context. Full dGPU inactivity after Exit must remain **unverified/unresolved**
-when another client is reported active.
+The user clarified that this is an expected Windows client behavior when NVIDIA
+has driven the display, unrelated to a GPU-Switcher defect. Clearing such clients
+was the original purpose of the explicit **Restart Display Adapters** command.
+Ordinary Exit releases only GPU-Switcher's own context. No further independent
+LockApp investigation is required for this task.
 
-Next controlled comparison: after a normal Windows restart, observe LockApp and
-NVIDIA activity through a lock/unlock or sleep/resume cycle without first running
-GPU-Switcher. Compare against the same sequence with GPU-Switcher. Keep the
-working application profile unchanged. Do not add automatic adapter resets or
-terminate LockApp as part of ordinary Exit on the basis of this evidence.
+The intended reset sequence is: release GPU-Switcher's device, run the elevated
+adapter cycle, verify recovery, then exit GPU-Switcher **without relaunching**.
+The earlier tested builds instead relaunched automatically after successful
+reset; those historical observations above remain accurate, but they do not
+match the original intended behavior. Automatic relaunch entered the repository
+in commit `65f60ab` (before the current development session), and was carried into
+this draft. The subsequent correction removes it on verified success.
+
+Partial or failed resets retain supervision/recovery and a visible warning;
+UAC cancellation retains the previous reacquisition behavior. The corrected
+successful reset-to-exit path requires a fresh manual test. Clearing existing
+contexts cannot prevent another application from acquiring the GPU later.
 
 ## Scope and remaining validation
 
