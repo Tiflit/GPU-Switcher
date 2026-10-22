@@ -100,10 +100,6 @@ Use **View Log** and save the log after each independent test from
    create a D3D11 device while the helper is resetting adapters. A timer already
    queued when reset starts must also be ignored.
 
-Real multi-dGPU/eGPU fallback validation requires additional hardware. The
-automated regressions simulate failed preferred creation; a single-dGPU Legion
-cannot validate the complete physical fallback scenario.
-
 7. **Slow helper / reopening:** do not manufacture a hardware hang. The automated
    policy tests cover the 60-second warning and eventual completion. If a real
    operation runs long, verify that the warning appears once, the tooltip stays
@@ -115,6 +111,15 @@ cannot validate the complete physical fallback scenario.
    enable attempts, final locate/status CONFIGRET, problem code, and elapsed time.
    Preserve deliberately disabled devices when testing on a suitable setup; do
    not disable the Legion's panel-driving adapter merely to exercise this case.
+
+9. **Windows Explorer restart:** while the utility is active, open Task Manager,
+   select Windows Explorer, and choose Restart. Confirm the tray icon returns,
+   its menu works, and ordinary Exit releases the held device. This is separate
+   from Restart Display Adapters.
+
+Real multi-dGPU/eGPU fallback validation requires additional hardware. The
+automated regressions simulate failed preferred creation; a single-dGPU Legion
+cannot validate the complete physical fallback scenario.
 
 ## Remaining limits
 

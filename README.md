@@ -17,42 +17,43 @@
 
 &nbsp;
 
-**GPU-Switcher** is a tiny, battery-friendly Windows system tray utility that keeps your laptop's discrete GPU (dGPU) activated with **near-zero CPU usage** and no persistent background rendering loops.
+**GPU-Switcher** is a small Windows system tray utility that keeps your laptop's discrete GPU (dGPU) activated with **near-zero CPU usage** and no persistent background rendering loops.
 
-Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus** (or MUX switch systems) where you want the dGPU ready for low-latency gaming, external displays, or 3D workloads without needing to keep a heavy game or benchmark running in the background.
+Designed primarily for hybrid laptops equipped with **NVIDIA Advanced Optimus**. It can keep the dGPU active without a game or benchmark running. Holding the dGPU active can increase power use; display switching depends on the laptop hardware, driver, and application profile. It does not directly control a hardware MUX.
 
 ---
 
 ## Features
 
-- ⚡ **Near-Zero Overhead**: Creates a persistent Direct3D 11 device on the dGPU and sleeps in the Windows message pump. No heavy background worker loops, no telemetry, and virtually 0% CPU consumption.
-- 🎨 **Dynamic Vendor Tray Icons**: Instantly see which GPU is active with color-coded tray icons:
+- ⚡ **Near-Zero Overhead**: Creates a persistent Direct3D 11 device on the dGPU and sleeps in the Windows message pump. No persistent rendering loop or telemetry. Event handlers and a 30-second health check still perform work; CPU usage has not been benchmarked.
+- 🎨 **Dynamic Vendor Tray Icons**: See which GPU device the utility holds with color-coded tray icons:
   - 🟢 **Green**: Active NVIDIA discrete GPU
   - 🔴 **Red**: Active AMD discrete GPU
   - 🔵 **Blue**: Active Intel discrete GPU
   - ⚪ **Grey**: Other / Unknown adapter
-  - 🟡 **Yellow**: Display reset in progress or dGPU acquisition warning
-- 🩺 **Live Health Monitoring & eGPU Auto-Recovery**: Tracks discrete adapters by **Locally Unique Identifier (LUID)** and provides event-driven hot-plug detection via `WM_DEVICECHANGE` (`DBT_DEVNODES_CHANGED`) with periodic retry fallback. If an eGPU is disconnected or a driver reset occurs (`GetDeviceRemovedReason()`), the app enters an explicit waiting state without trapping onto integrated graphics, and automatically re-acquires the preferred discrete GPU as soon as hardware re-initialization completes.
-- 💤 **Non-Blocking Power Management**: Flushes and releases the DirectX context cleanly before sleep (`PBT_APMSUSPEND`), and re-acquires automatically with a brief delay upon system resume without freezing the message loop.
-- 🔄 **Verified Display Adapter Restart**: Safely cycles PCI display adapters using the Windows Configuration Manager API (`CfgMgr32`), skips known virtual/software devices, deterministically verifies driver initialization via `CM_Get_DevNode_Status` (`DN_STARTED`), and surfaces partial or failed reset results.
+  - 🟡 **Yellow**: Starting, acquiring, waiting, suspended/resuming, resetting, or recovering; a brief yellow-to-vendor-color transition is expected
+- 🩺 **Live Health Monitoring & eGPU Auto-Recovery**: Tracks discrete adapters by **Locally Unique Identifier (LUID)** and provides event-driven hot-plug detection via `WM_DEVICECHANGE` (`DBT_DEVNODES_CHANGED`) with periodic retry fallback. After adapter loss, it retries eligible discrete adapters and attempts to return to the preferred adapter when available. Physical eGPU and multi-dGPU recovery have not yet been validated.
+- 💤 **Non-Blocking Power Management**: Flushes and releases the DirectX context cleanly before sleep (`PBT_APMSUSPEND`), and re-acquires automatically with a brief delay upon system resume using a timer rather than a blocking resume delay. Device creation itself runs on the UI thread.
+- 🔄 **Verified Display Adapter Restart**: Cycles eligible PCI display adapters using the Windows Configuration Manager API (`CfgMgr32`), skips known virtual/software devices, checks device-start status via `CM_Get_DevNode_Status` (`DN_STARTED`), and surfaces partial or failed reset results.
 - 🖥️ **CLI Controls**: Supports `--exit` / `--quit` for graceful shutdown from scripts or terminals, and `--help` for usage information.
 - 🔔 **Single-Instance Aware**: Launching a duplicate instance highlights and displays the active GPU status balloon from the existing tray process.
-- 🔍 **High-DPI & Per-User Logging**: Full Per-Monitor V2 DPI awareness and rolling diagnostic logs stored safely in `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`.
+- 🔍 **High-DPI & Per-User Logging**: Full Per-Monitor V2 DPI awareness and rolling diagnostic logs stored in `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log`.
 
 ---
 
 ## Download & Installation
 
 GPU-Switcher is a standalone portable application:
+
 1. Download the latest `GPU-Switcher-*-windows-x64.zip` from the **[Releases](https://github.com/Tiflit/GPU-Switcher/releases)** page.
-2. Extract `GPU-Switcher.exe` to a permanent location (e.g., `C:\Program Files\GPU-Switcher` or your tools directory).
+2. Extract the ZIP contents to a permanent location (e.g., `C:\Program Files\GPU-Switcher` or your tools directory).
 3. Run `GPU-Switcher.exe`. It will appear in your notification area (system tray).
 
 ---
 
 ## One-Time GPU Preference Setup
 
-Starting with Windows 10 (version 20H1+) and Windows 11, the operating system's per-application **Graphics Settings** can override driver-level preferences. To ensure your discrete GPU is consistently selected:
+GPU-Switcher explicitly selects an eligible discrete DXGI adapter. Windows and vendor preferences can provide additional driver hints, but the NVIDIA application profile controls the Advanced Optimus behavior tested here.
 
 ### Step 1: Windows Graphics Settings (Recommended)
 1. Open Windows **Settings → System → Display → Graphics** (or search "Graphics Settings" in the Start menu).
@@ -60,8 +61,8 @@ Starting with Windows 10 (version 20H1+) and Windows 11, the operating system's 
 3. Click **Options** on the newly added entry and select **High performance** (identifying your discrete GPU, e.g. NVIDIA / AMD / Intel Arc).
 4. Click **Save**.
 
-### Step 2: NVIDIA Control Panel (for Advanced Optimus laptops)
-For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switching on launch:
+### Step 2: NVIDIA application profile (for Advanced Optimus laptops)
+For compatible NVIDIA Advanced Optimus laptops, configure the program profile. Available controls vary by driver and laptop. If using NVIDIA Control Panel:
 1. Open **NVIDIA Control Panel**.
 2. Navigate to **Manage 3D settings → Program Settings**.
 3. Click **Add** and select `GPU-Switcher.exe`.
@@ -75,7 +76,7 @@ utility. The [Legion validation report](docs/LEGION-VALIDATION-2026-10-22.md)
 records successful ordinary launch switching after recreating that program
 profile; a display-adapter reset was not required for that first successful launch.
 
-*After this one-time configuration, launching GPU-Switcher will consistently trigger discrete GPU pinning and Advanced Optimus display switching.*
+On the tested Legion this configuration successfully triggered switching. It does not establish the same result on every hybrid laptop; confirm actual panel routing separately from the tray icon.
 
 ---
 
@@ -96,7 +97,7 @@ profile; a display-adapter reset was not required for that first successful laun
 | Option | Description |
 |---|---|
 | *(none)* | Launches the tray utility. If already running, activates and notifies the existing instance. |
-| `--exit` / `--quit` | Gracefully closes the running GPU-Switcher instance. |
+| `--exit` / `--quit` | Requests graceful closure of the running instance; closure is blocked while a reset is being monitored. |
 | `--help` / `-h` / `/?` | Displays the help dialog with available options. |
 | `--reset-gpu` | Helper flag used internally to perform the elevated display adapter reset. |
 
@@ -107,10 +108,10 @@ profile; a display-adapter reset was not required for that first successful laun
 1. **Driver Enablement Hints**: Exports documented vendor activation symbols:
    - `NvOptimusEnablement = 1` (NVIDIA Optimus rendering hint)
    - `AmdPowerXpressRequestHighPerformance = 1` (AMD PowerXpress hint)
-2. **Adapter Classification & LUID Tracking**: Enumerates all DXGI adapters, removes software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and classifies discrete candidates (NVIDIA, AMD dGPU, Intel Arc) separate from integrated APUs. Remembers the preferred adapter via its Windows **Locally Unique Identifier (LUID)** so transient disconnects do not trap the system into integrated graphics.
-3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the selected discrete adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
-4. **State-Driven, Lightweight Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation with negligible resident CPU impact.
-5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles PCI display adapters via CfgMgr32, preserves initially disabled or stopped adapters, retries recovery with refreshed device nodes, poll-verifies driver initialization, and propagates status back to the parent. A machine-wide mutex excludes competing helpers. The tray monitors completion without a background wait thread; after 60 seconds it warns and keeps monitoring, with acquisition and another reset still blocked.
+2. **Adapter Classification & LUID Tracking**: Enumerates all DXGI adapters, removes software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and uses vendor/VRAM heuristics to classify discrete candidates. These thresholds are not universal, and initial ranking includes vendor and VRAM scores. The first successfully acquired candidate becomes the preferred adapter for the lifetime of the process, tracked by its Windows **Locally Unique Identifier (LUID)**.
+3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the selected discrete adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. The held device keeps a GPU client active. On the tested Legion, the configured NVIDIA profile also switches the panel to the dGPU. GPU power state and panel routing remain driver/hardware dependent.
+4. **State-Driven, Lightweight Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation without a persistent rendering loop.
+5. **Supervised Adapter Reset**: When display restart is requested, an elevated helper cycles PCI display adapters via CfgMgr32, preserves initially disabled or stopped adapters, retries recovery with refreshed device nodes, poll-verifies driver initialization, and propagates status back to the parent. A machine-wide mutex excludes cooperating GPU-Switcher helpers; it does not coordinate external device-management tools. Recovery is bounded and may fail. The tray monitors completion without a background wait thread; after 60 seconds it warns and keeps monitoring, with acquisition and another reset still blocked.
 
 ---
 
@@ -118,9 +119,9 @@ profile; a display-adapter reset was not required for that first successful laun
 
 | System Type | Behavior |
 |---|---|
-| **NVIDIA Advanced Optimus** | Full dynamic display switching and dGPU activation. |
-| **Standard Optimus (Muxless)** | Activates dGPU; internal display routing remains on iGPU (by hardware design). |
-| **AMD Hybrid / SmartAccess** | Driver hints exported; display switching depends on OEM MUX architecture. |
+| **NVIDIA Advanced Optimus** | Device activation and profile-driven display switching validated on one Intel + RTX 4060 Legion; other systems require testing. |
+| **Standard Optimus (Muxless)** | Intended to hold the dGPU active; internal display routing remains on iGPU. Not hardware-validated here. |
+| **AMD / Intel discrete GPUs** | Eligible adapters can be selected by the heuristics; physical activation/recovery and display switching remain unverified. |
 
 ---
 
@@ -148,10 +149,10 @@ Run all four regression suites with `ctest --test-dir build -C Release --output-
 
 ## Troubleshooting & Diagnostics
 
-- **Diagnostic Logs**: Use **View Log** in the tray menu. Startup records the version and build commit (or `unknown` when built without Git metadata). A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (capped at 16 KB with automatic rotation). Check this file if a device fails to acquire or to inspect detected adapter scores.
-- **Display Stuttering**: If your laptop panel stutters after switching display modes, use **Restart Display Adapters** from the tray menu to reload the graphics driver stack without rebooting Windows.
+- **Diagnostic Logs**: Use **View Log** in the tray menu. Startup records the version and build commit (or `unknown` when built without Git metadata). A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (trimmed after exceeding a 16 KB target; concurrent tray/helper writes may lose entries). Check this file if a device fails to acquire or to inspect detected adapter scores.
+- **Display Stuttering**: **Restart Display Adapters** can cycle eligible adapters without a reboot, but is not a guaranteed remedy. Save work and close graphics workloads first. A successful reset exits GPU-Switcher; launch it again if you want to hold the dGPU active.
 - **NVIDIA Still Active After Exit**: Returning the panel to Intel does not ensure the NVIDIA GPU becomes inactive. Other programs can retain GPU contexts; LockApp was reported in the Legion test. Ordinary Exit releases GPU-Switcher's own device. To clear other GPU clients, explicitly choose **Restart Display Adapters**; on verified success the utility exits without relaunching. Other programs may subsequently acquire the GPU again. See the [validation report](docs/LEGION-VALIDATION-2026-10-22.md).
-- **Display Not Switching**: Ensure you have configured the program profile in Windows Graphics Settings and NVIDIA Control Panel as described in the [One-Time GPU Preference Setup](#one-time-gpu-preference-setup).
+- **Display Not Switching**: Ensure you have configured the program profile in NVIDIA App or NVIDIA Control Panel as described in the [One-Time GPU Preference Setup](#one-time-gpu-preference-setup).
 
 ---
 
