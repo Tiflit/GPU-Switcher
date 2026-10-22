@@ -3,3 +3,5 @@
 
 void LogError(const std::wstring& msg);
 void LogInfo(const std::wstring& msg);
+
+std::wstring GetLogPath();

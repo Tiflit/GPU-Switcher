@@ -11,6 +11,9 @@
 
 #include "resource.h"
 #include "gpu/acquisition.h"
+#include "reset/reset_lock.h"
+#include "reset/reset_policy.h"
+#include "build_info.h"
 #include "util/logging.h"
 #include "util/startup.h"
 #include "util/reset.h"
@@ -32,9 +35,11 @@ extern "C" {
 #define ID_START_WINDOWS        1001
 #define ID_RESET_DISPLAYS       1002
 #define ID_EXIT                 1003
+#define ID_VIEW_LOG             1004
 
 #define TIMER_RESUME_REACQUIRE  2001
 #define TIMER_HEALTH_CHECK      2002
+#define TIMER_RESET_MONITOR     2003
 
 using Microsoft::WRL::ComPtr;
 
@@ -73,6 +78,9 @@ struct GpuCandidate
 
 static HINSTANCE                            g_hInst             = nullptr;
 static HANDLE                               g_hMutex            = nullptr;
+static HWND                                 g_window            = nullptr;
+static HANDLE                               g_resetProcess      = nullptr;
+static reset::Watch                         g_resetWatch;
 static ComPtr<ID3D11Device>                 g_device;
 static ComPtr<ID3D11DeviceContext>          g_context;
 static NOTIFYICONDATAW                      g_nid               = {};
@@ -226,8 +234,17 @@ struct PendingGpu
 static bool AcquireDGpu()
 {
     // All acquisition paths must leave devices alone while the helper resets them.
-    if (g_appState == AppState::Resetting)
+    if (g_appState == AppState::Resetting || g_resetWatch.Active())
         return false;
+    if (reset::Active())
+    {
+        ReleaseDGpu();
+        SetAppState(AppState::Resetting);
+        g_resetWatch.Start(GetTickCount64());
+        SetTimer(g_window, TIMER_RESET_MONITOR, 500, nullptr);
+        LogInfo(L"External display reset detected; waiting before GPU acquisition");
+        return false;
+    }
 
     const bool currentHealthy = g_device && g_device->GetDeviceRemovedReason() == S_OK;
     if (!currentHealthy)
@@ -417,7 +434,9 @@ static void UpdateTrayStatus(const wchar_t* customTip = nullptr)
             }
             break;
         case AppState::Resetting:
-            wcsncpy_s(g_nid.szTip, L"GPU-Switcher: Restarting display adapters…", _TRUNCATE);
+            wcsncpy_s(g_nid.szTip, g_resetWatch.TimedOut() ?
+                L"GPU-Switcher: Reset taking longer than expected; still waiting" :
+                L"GPU-Switcher: Restarting display adapters…", _TRUNCATE);
             break;
         case AppState::WaitingForDiscreteGpu:
             if (!g_preferredGpuName.empty())
@@ -441,19 +460,55 @@ static void UpdateTrayStatus(const wchar_t* customTip = nullptr)
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
-// Thread proc: waits for the elevated child to exit, then posts WM_RESET_DONE with child's exit code
-struct WaitCtx { HANDLE hProcess; HWND hwnd; };
-
-static DWORD WINAPI WaitForResetThread(LPVOID param)
+static void ShowResetNotice(const wchar_t* message)
 {
-    auto* ctx = reinterpret_cast<WaitCtx*>(param);
-    WaitForSingleObject(ctx->hProcess, INFINITE);
-    DWORD exitCode = static_cast<DWORD>(ResetResult::EnableFailed);
-    GetExitCodeProcess(ctx->hProcess, &exitCode);
-    CloseHandle(ctx->hProcess);
-    PostMessageW(ctx->hwnd, WM_RESET_DONE, static_cast<WPARAM>(exitCode), 0);
-    delete ctx;
-    return 0;
+    NOTIFYICONDATAW balloon = g_nid;
+    balloon.uFlags |= NIF_INFO;
+    balloon.dwInfoFlags = NIIF_WARNING | NIIF_NOSOUND;
+    wcsncpy_s(balloon.szInfoTitle, L"GPU-Switcher: Display Reset", _TRUNCATE);
+    wcsncpy_s(balloon.szInfo, message, _TRUNCATE);
+    Shell_NotifyIconW(NIM_MODIFY, &balloon);
+}
+
+static void PollReset(HWND hwnd)
+{
+    if (!g_resetWatch.Active()) return;
+    const bool ownHelper = g_resetProcess != nullptr;
+    const DWORD waitResult = ownHelper ? WaitForSingleObject(g_resetProcess, 0) :
+        (reset::Active() ? WAIT_TIMEOUT : WAIT_OBJECT_0);
+    const auto event = g_resetWatch.Observe(waitResult == WAIT_OBJECT_0 ? reset::WaitState::Complete :
+        (waitResult == WAIT_TIMEOUT ? reset::WaitState::Running : reset::WaitState::Failed), GetTickCount64());
+    if (event == reset::WatchEvent::Completed)
+    {
+        KillTimer(hwnd, TIMER_RESET_MONITOR);
+        if (ownHelper)
+        {
+            DWORD exitCode = static_cast<DWORD>(ResetResult::VerifyFailed);
+            if (!GetExitCodeProcess(g_resetProcess, &exitCode))
+                LogError(L"Could not read completed reset helper exit code");
+            CloseHandle(g_resetProcess);
+            g_resetProcess = nullptr;
+            SendMessageW(hwnd, WM_RESET_DONE, static_cast<WPARAM>(exitCode), 0);
+        }
+        else
+        {
+            LogInfo(L"External reset lock released; recovering GPU (external result unknown)");
+            SetAppState(AppState::DeviceLost);
+            AcquireDGpu();
+            UpdateTrayStatus();
+        }
+    }
+    else if (event == reset::WatchEvent::TimedOut)
+    {
+        LogError(L"Reset exceeded 60 seconds; supervision and acquisition exclusion remain active");
+        UpdateTrayStatus();
+        ShowResetNotice(L"Reset is taking longer than expected. Still waiting for the helper; GPU acquisition and another reset remain blocked.");
+    }
+    else if (event == reset::WatchEvent::WaitFailed)
+    {
+        LogError(L"Reset process wait failed; retaining the handle and continuing supervision");
+        ShowResetNotice(L"Could not query reset completion. The utility will keep monitoring; another reset remains blocked.");
+    }
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -510,7 +565,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 }
                 break;
             case AppState::Resetting:
-                wcsncpy_s(balloon.szInfo, L"Display adapter restart in progress…", _TRUNCATE);
+                wcsncpy_s(balloon.szInfo, g_resetWatch.TimedOut() ?
+                    L"Reset is taking longer than expected. Still monitoring; acquisition and another reset remain blocked." :
+                    L"Display adapter restart in progress…", _TRUNCATE);
                 break;
             case AppState::WaitingForDiscreteGpu:
                 if (!g_preferredGpuName.empty())
@@ -545,7 +602,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             AppendMenuW(menu, MF_STRING | (g_appState == AppState::Resetting ? MF_GRAYED : 0),
                         ID_RESET_DISPLAYS, L"Restart Display Adapters");
 
-            AppendMenuW(menu, MF_STRING,
+            AppendMenuW(menu, MF_STRING, ID_VIEW_LOG, L"View Log");
+            AppendMenuW(menu, MF_STRING | (g_appState == AppState::Resetting ? MF_GRAYED : 0),
                         ID_EXIT, L"Exit");
 
             POINT pt;
@@ -566,8 +624,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             case ID_RESET_DISPLAYS:
             {
-                if (g_appState == AppState::Resetting)
+                if (g_appState == AppState::Resetting || g_resetWatch.Active())
                     break;
+                if (reset::Active())
+                {
+                    AcquireDGpu();
+                    UpdateTrayStatus();
+                    ShowResetNotice(L"Another display reset is active or its lock cannot be inspected. Waiting for it to finish.");
+                    break;
+                }
+                if (!SetTimer(hwnd, TIMER_RESET_MONITOR, 500, nullptr))
+                {
+                    LogError(L"Could not start reset supervision timer; helper was not launched");
+                    ShowResetNotice(L"Could not start reset monitoring. No reset was launched.");
+                    break;
+                }
 
                 SetAppState(AppState::Resetting);
                 KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
@@ -590,6 +661,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                 if (!ShellExecuteExW(&sei) || !sei.hProcess)
                 {
+                    KillTimer(hwnd, TIMER_RESET_MONITOR);
                     LogInfo(L"Elevated launch cancelled or failed — reacquiring dGPU");
                     SetAppState(AppState::DeviceLost);
                     AcquireDGpu();
@@ -600,26 +672,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 LogInfo(L"Elevated child launched — waiting for reset completion");
                 UpdateTrayStatus(L"Restarting display adapters… screen may flicker");
 
-                auto* ctx = new WaitCtx{ sei.hProcess, hwnd };
-                HANDLE hThread = CreateThread(nullptr, 0, WaitForResetThread,
-                                              ctx, 0, nullptr);
-                if (hThread)
-                {
-                    CloseHandle(hThread);
-                }
-                else
-                {
-                    LogError(L"CreateThread failed — exiting immediately");
-                    CloseHandle(sei.hProcess);
-                    delete ctx;
-                    Shell_NotifyIconW(NIM_DELETE, &g_nid);
-                    PostQuitMessage(0);
-                }
+                g_resetProcess = sei.hProcess;
+                g_resetWatch.Start(GetTickCount64());
                 break;
             }
 
+            case ID_VIEW_LOG:
+                ShellExecuteW(hwnd, L"open", GetLogPath().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+
             case ID_EXIT:
-                PostQuitMessage(0);
+                SendMessageW(hwnd, WM_CLOSE, 0, 0);
                 break;
             }
         }
@@ -757,6 +820,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return TRUE;
 
     case WM_TIMER:
+        if (wParam == TIMER_RESET_MONITOR)
+        {
+            PollReset(hwnd);
+            return 0;
+        }
         if (wParam == TIMER_RESUME_REACQUIRE)
         {
             KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
@@ -773,6 +841,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (wParam == TIMER_HEALTH_CHECK)
         {
+            if (g_resetWatch.Active())
+            {
+                PollReset(hwnd); // Fallback if the dedicated timer could not be established.
+                return 0;
+            }
             if (g_appState == AppState::Active && g_device)
             {
                 HRESULT hr = g_device->GetDeviceRemovedReason();
@@ -857,12 +930,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_CLOSE:
+        if (g_appState == AppState::Resetting || g_resetWatch.Active())
+        {
+            ShowResetNotice(L"A display reset is still being monitored. Exit is available after the helper finishes.");
+            return 0;
+        }
         PostQuitMessage(0);
         return 0;
 
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
         KillTimer(hwnd, TIMER_HEALTH_CHECK);
+        KillTimer(hwnd, TIMER_RESET_MONITOR);
         PostQuitMessage(0);
         return 0;
     }
@@ -873,7 +952,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // Elevated path: called when launched with --reset-gpu
 static int RunElevatedReset()
 {
-    LogInfo(L"GPU-Switcher elevated reset started");
+    LogInfo(L"GPU-Switcher v" APP_VERSION L" build " GPU_SWITCHER_BUILD_REVISION L" elevated reset started");
     ResetResult res = CycleAllDisplayAdapters();
     wchar_t buf[128];
     swprintf_s(buf, L"GPU-Switcher elevated reset completed with result: %s (%d)",
@@ -962,7 +1041,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         return 0;
     }
 
-    LogInfo(L"GPU-Switcher v" APP_VERSION L" started");
+    LogInfo(L"GPU-Switcher v" APP_VERSION L" build " GPU_SWITCHER_BUILD_REVISION L" started");
 
     g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
@@ -977,6 +1056,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         WS_POPUP, 0, 0, 0, 0,
         nullptr, nullptr, hInst, nullptr);
 
+    if (!hwnd)
+    {
+        LogError(L"Could not create tray window; reset monitoring is unavailable");
+        CloseHandle(g_hMutex);
+        g_hMutex = nullptr;
+        return 1;
+    }
+    g_window = hwnd;
     Sleep(200);
 
     if (!AcquireDGpu())
@@ -1009,6 +1096,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
     ReleaseDGpu();
+    if (g_resetProcess) CloseHandle(g_resetProcess);
     LogInfo(L"GPU-Switcher exited cleanly");
     if (g_hMutex)
     {

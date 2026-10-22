@@ -2,6 +2,9 @@
 
 #include <windows.h>
 #include <cfgmgr32.h>
+#include <cfg.h>
+#include "reset/reset_lock.h"
+#include "reset/reset_policy.h"
 #include <vector>
 #include <string>
 
@@ -19,6 +22,13 @@ struct AdapterTarget
     std::wstring name;
     std::wstring instanceId;
     bool         disabledSuccessfully = false;
+    reset::InitialState initial;
+    CONFIGRET lastLocate = CR_SUCCESS;
+    CONFIGRET lastStatus = CR_SUCCESS;
+    CONFIGRET lastEnable = CR_SUCCESS;
+    ULONG status = 0;
+    ULONG problem = 0;
+    unsigned enableAttempts = 0;
 
     AdapterTarget(DEVINST i, const std::wstring& n, const std::wstring& id, bool d = false)
         : inst(i), name(n), instanceId(id), disabledSuccessfully(d) {}
@@ -34,6 +44,9 @@ const wchar_t* ResetResultToString(ResetResult res)
     case ResetResult::PartialDisable:    return L"PartialDisable";
     case ResetResult::EnableFailed:      return L"EnableFailed";
     case ResetResult::VerifyFailed:      return L"VerifyFailed";
+    case ResetResult::AlreadyRunning:    return L"AlreadyRunning";
+    case ResetResult::LockFailed:        return L"LockFailed";
+    case ResetResult::NoEligibleAdapters: return L"NoEligibleAdapters";
     default:                             return L"Unknown";
     }
 }
@@ -56,8 +69,59 @@ static std::wstring ConfigRetToString(CONFIGRET cr)
     }
 }
 
+static bool ReadStatus(AdapterTarget& adapter)
+{
+    // Devnode handles can change while drivers are cycled. Never reuse a stale one.
+    adapter.lastLocate = CM_Locate_DevNodeW(&adapter.inst, adapter.instanceId.data(), CM_LOCATE_DEVNODE_NORMAL);
+    adapter.status = 0;
+    adapter.problem = 0;
+    if (adapter.lastLocate != CR_SUCCESS)
+    {
+        adapter.lastStatus = adapter.lastLocate;
+        return false;
+    }
+    adapter.lastStatus = CM_Get_DevNode_Status(&adapter.status, &adapter.problem, adapter.inst, 0);
+    if (adapter.lastStatus == CR_SUCCESS && !(adapter.status & DN_HAS_PROBLEM))
+        adapter.problem = 0;
+    return adapter.lastStatus == CR_SUCCESS;
+}
+
+static bool VerifyStarted(AdapterTarget& adapter)
+{
+    for (int attempt = 0; attempt < 15; ++attempt)
+    {
+        Sleep(200);
+        if (ReadStatus(adapter) && (adapter.status & DN_STARTED) && adapter.problem == 0)
+            return true;
+    }
+    return false;
+}
+
+static void LogOutcome(const AdapterTarget& adapter, const wchar_t* phase, ULONGLONG started)
+{
+    LogInfo(std::wstring(phase) + L": " + adapter.instanceId +
+        L"; initialKnown=" + std::to_wstring(adapter.initial.known) +
+        L"; initialDisabled=" + std::to_wstring(adapter.initial.disabled) +
+        L"; initialStarted=" + std::to_wstring(adapter.initial.started) +
+        L"; disabledByUs=" + std::to_wstring(adapter.disabledSuccessfully) +
+        L"; lastLocate=" + ConfigRetToString(adapter.lastLocate) +
+        L"; lastStatus=" + ConfigRetToString(adapter.lastStatus) +
+        L"; status=" + std::to_wstring(adapter.status) +
+        L"; problem=" + std::to_wstring(adapter.problem) +
+        L"; enableAttempts=" + std::to_wstring(adapter.enableAttempts) +
+        L"; lastEnable=" + ConfigRetToString(adapter.lastEnable) +
+        L"; elapsedMs=" + std::to_wstring(GetTickCount64() - started));
+}
+
 ResetResult CycleAllDisplayAdapters()
 {
+    reset::Lock lock;
+    if (lock.Status() != reset::LockStatus::Acquired)
+    {
+        LogError(L"Reset excluded: another helper owns the lock, or the lock is inaccessible");
+        return lock.Status() == reset::LockStatus::Busy ? ResetResult::AlreadyRunning : ResetResult::LockFailed;
+    }
+    const ULONGLONG started = GetTickCount64();
     std::vector<AdapterTarget> adapters;
 
     // 1. Query required buffer size for all present devices
@@ -158,119 +222,88 @@ ResetResult CycleAllDisplayAdapters()
     for (const auto& a : adapters)
         LogInfo(L"  - Target: " + a.name + L" (" + a.instanceId + L")");
 
-    // 4. Disable display adapters and track results
+    // Snapshot every target before changing any device. Unknown, stopped, or
+    // pre-disabled devices are not touched and will never be enabled by us.
+    unsigned eligible = 0;
     bool hadDisableFailure = false;
-    for (auto& a : adapters)
+    for (auto& adapter : adapters)
     {
-        LogInfo(L"Disabling: " + a.name + L" (" + a.instanceId + L")");
-        CONFIGRET cr = CM_Disable_DevNode(a.inst, 0);
-        if (cr == CR_SUCCESS)
+        adapter.initial.known = ReadStatus(adapter);
+        adapter.initial.disabled = adapter.initial.known && adapter.problem == CM_PROB_DISABLED;
+        adapter.initial.started = adapter.initial.known &&
+            (adapter.status & DN_STARTED) && adapter.problem == 0;
+        if (reset::Eligible(adapter.initial))
+            ++eligible;
+        else if (!adapter.initial.known || !adapter.initial.disabled)
+            hadDisableFailure = true;
+        LogOutcome(adapter, L"Initial state", started);
+    }
+    if (!eligible)
+        return ResetResult::NoEligibleAdapters;
+
+    unsigned changed = 0;
+    for (auto& adapter : adapters)
+    {
+        if (!reset::Eligible(adapter.initial))
         {
-            a.disabledSuccessfully = true;
-            LogInfo(L"Successfully disabled: " + a.name);
+            LogOutcome(adapter, L"Skipped initial state", started);
+            continue;
         }
-        else
+        // Refresh immediately before the request as well as before recovery.
+        if (!ReadStatus(adapter) || !(adapter.status & DN_STARTED) || adapter.problem != 0)
         {
             hadDisableFailure = true;
-            LogError(L"Failed to disable " + a.name + L" — " + ConfigRetToString(cr));
-        }
-    }
-
-    Sleep(2000); // Allow driver unload
-
-    // 5. Re-enable display adapters with retry logic
-    bool hadEnableFailure = false;
-    LogInfo(L"Re-enabling display adapters...");
-    for (auto& a : adapters)
-    {
-        if (!a.disabledSuccessfully)
-        {
-            LogInfo(L"Skipping re-enable for " + a.name + L" (was not disabled)");
+            LogOutcome(adapter, L"Skipped changed/unreadable state", started);
             continue;
         }
-
-        LogInfo(L"Re-enabling: " + a.name + L" (" + a.instanceId + L")");
-        CONFIGRET cr = CM_Enable_DevNode(a.inst, 0);
-
-        int retries = 3;
-        while (cr != CR_SUCCESS && retries-- > 0)
+        const CONFIGRET cr = CM_Disable_DevNode(adapter.inst, 0);
+        adapter.disabledSuccessfully = cr == CR_SUCCESS;
+        LogInfo(L"Disable request: " + adapter.instanceId + L"; result=" + ConfigRetToString(cr));
+        if (adapter.disabledSuccessfully)
         {
-            Sleep(1000);
-            LogInfo(L"Retrying enable for: " + a.name);
-            cr = CM_Enable_DevNode(a.inst, 0);
-        }
-
-        if (cr == CR_SUCCESS)
-        {
-            LogInfo(L"Successfully requested enable for: " + a.name);
+            ++changed;
+            ReadStatus(adapter);
+            LogOutcome(adapter, L"After disable request", started);
         }
         else
-        {
-            hadEnableFailure = true;
-            LogError(L"CRITICAL: Failed to re-enable " + a.name + L" — " + ConfigRetToString(cr));
-        }
+            hadDisableFailure = true;
     }
-
-    // 6. Deterministic verification: poll CM_Get_DevNode_Status until DN_STARTED with problem == 0
-    bool hadVerifyFailure = false;
-    LogInfo(L"Verifying device startup status with CM_Get_DevNode_Status...");
-    for (auto& a : adapters)
-    {
-        if (!a.disabledSuccessfully)
-            continue;
-
-        bool started = false;
-        ULONG status = 0;
-        ULONG problem = 0;
-
-        // Poll for up to 3000ms (15 iterations x 200ms) for driver initialization
-        for (int attempt = 0; attempt < 15; ++attempt)
-        {
-            Sleep(200);
-            CONFIGRET cr = CM_Get_DevNode_Status(&status, &problem, a.inst, 0);
-            if (cr == CR_SUCCESS)
-            {
-                if ((status & DN_STARTED) != 0 && problem == 0)
-                {
-                    started = true;
-                    break;
-                }
-            }
-        }
-
-        if (started)
-        {
-            wchar_t logBuf[256];
-            swprintf_s(logBuf, L"Verified %s started successfully (Status: 0x%08X, Problem: %u)",
-                a.name.c_str(), status, problem);
-            LogInfo(logBuf);
-        }
-        else
-        {
-            hadVerifyFailure = true;
-            wchar_t errBuf[256];
-            swprintf_s(errBuf, L"CRITICAL: Verification failed for %s (Status: 0x%08X, Problem: %u)",
-                a.name.c_str(), status, problem);
-            LogError(errBuf);
-        }
-    }
-
-    if (hadEnableFailure)
-    {
-        LogError(L"Adapter cycle completed with errors: one or more adapters failed to re-enable");
-        return ResetResult::EnableFailed;
-    }
-    if (hadVerifyFailure)
-    {
-        LogError(L"Adapter cycle completed with errors: one or more adapters failed verification");
-        return ResetResult::VerifyFailed;
-    }
-    if (hadDisableFailure)
-    {
-        LogError(L"Adapter cycle completed with warning: one or more adapters could not be disabled; only successfully disabled adapters were cycled and verified");
+    if (!changed)
         return ResetResult::PartialDisable;
-    }
 
-    LogInfo(L"Adapter cycle completed successfully: all display adapters restarted and verified");
-    return ResetResult::Success;
+    Sleep(2000);
+    bool hadRecoveryFailure = false;
+    bool hadEnableFailure = false;
+    for (auto& adapter : adapters)
+    {
+        if (!adapter.disabledSuccessfully) continue;
+        const bool recovered = reset::Recover(adapter.disabledSuccessfully,
+            [&]
+            {
+                ++adapter.enableAttempts;
+                adapter.lastLocate = CM_Locate_DevNodeW(&adapter.inst,
+                    adapter.instanceId.data(), CM_LOCATE_DEVNODE_NORMAL);
+                adapter.lastEnable = adapter.lastLocate == CR_SUCCESS ?
+                    CM_Enable_DevNode(adapter.inst, 0) : adapter.lastLocate;
+                LogInfo(L"Enable request: " + adapter.instanceId +
+                    L"; attempt=" + std::to_wstring(adapter.enableAttempts) +
+                    L"; result=" + ConfigRetToString(adapter.lastEnable));
+                return adapter.lastEnable == CR_SUCCESS;
+            },
+            [&] { return VerifyStarted(adapter); },
+            [](unsigned milliseconds) { Sleep(milliseconds); });
+        LogOutcome(adapter, recovered ? L"Verified recovered" : L"UNRESOLVED recovery", started);
+        if (!recovered)
+        {
+            hadRecoveryFailure = true;
+            if (adapter.lastEnable != CR_SUCCESS) hadEnableFailure = true;
+        }
+    }
+    if (hadRecoveryFailure)
+    {
+        LogError(L"Reset incomplete: one or more devices remain unresolved; see per-device outcomes");
+        return hadEnableFailure ? ResetResult::EnableFailed : ResetResult::VerifyFailed;
+    }
+    LogInfo(L"Reset finished; elapsedMs=" + std::to_wstring(GetTickCount64() - started));
+    return hadDisableFailure ? ResetResult::PartialDisable : ResetResult::Success;
 }

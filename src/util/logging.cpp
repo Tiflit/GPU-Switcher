@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <string>
 
-static std::wstring GetLogPath()
+std::wstring GetLogPath()
 {
     static std::wstring s_cachedPath;
     if (!s_cachedPath.empty())

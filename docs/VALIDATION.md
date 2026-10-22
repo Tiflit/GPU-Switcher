@@ -2,8 +2,8 @@
 
 ## Automated checks
 
-The Windows build workflow compiles the application and runs the acquisition
-regressions with CTest. The tests use the same ordering and replacement helper
+The Windows build workflow compiles the application and runs acquisition, reset
+policy, and cross-process reset-lock regressions with CTest. The tests use the same ordering and replacement helper
 as the application, with simulated resources and creation failures.
 
 ```powershell
@@ -12,11 +12,13 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The acquisition tests are also independent of Windows headers:
+The acquisition and reset-policy tests are independent of Windows headers:
 
 ```sh
 g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/acquisition_tests.cpp -o acquisition_tests
 ./acquisition_tests
+g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/reset_policy_tests.cpp -o reset_policy_tests
+./reset_policy_tests
 ```
 
 Coverage includes preferred/current/score ordering, equal-score ties, successful
@@ -30,11 +32,20 @@ The vendor and memory classification thresholds remain heuristics. Passing the
 acquisition tests does not establish that those thresholds classify all GPUs
 correctly.
 
+Reset-policy tests cover timeout followed by completion, wait failure retaining
+exclusion, initial-state eligibility, refusing to enable untouched devices,
+transient enable failure, failed startup verification followed by recovery, and
+bounded permanent failure. Windows lock tests launch separate test processes to
+check rejection while locked, admission after release, and conservative failure
+when the mutex name is occupied by a different object type. No test calls the
+physical device-reset APIs. Cross-account UAC and cross-session behavior still
+require manual validation.
+
 ## Legion hardware checks
 
 Use the Windows CI artifact for the exact commit under test. Record the commit,
 Windows build, graphics driver versions, power source, and display connections.
-Save the log after each independent test from
+Use **View Log** and save the log after each independent test from
 `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` before its rolling limit discards it.
 
 1. **Cold launch:** with the documented NVIDIA profile configured, launch the
@@ -61,9 +72,28 @@ Real multi-dGPU/eGPU fallback validation requires additional hardware. The
 automated regressions simulate failed preferred creation; a single-dGPU Legion
 cannot validate the complete physical fallback scenario.
 
+7. **Slow helper / reopening:** do not manufacture a hardware hang. The automated
+   policy tests cover the 60-second warning and eventual completion. If a real
+   operation runs long, verify that the warning appears once, the tooltip stays
+   in the waiting state, Exit and another reset remain blocked, and completion
+   is still handled. If the tray was forcibly terminated and reopened, it should
+   detect the active helper lock and wait; the external helper's final result is
+   unknown to that new instance and must not be reported as verified success.
+8. **Recovery diagnostics:** check the per-device initial state, disable result,
+   enable attempts, final locate/status CONFIGRET, problem code, and elapsed time.
+   Preserve deliberately disabled devices when testing on a suitable setup; do
+   not disable the Legion's panel-driving adapter merely to exercise this case.
+
 ## Remaining limits
 
-Helper timeouts, concurrent reset-helper prevention, recovery after failed
-re-enable, and cross-process/cross-account logging remain separate follow-ups.
-Device startup verification does not guarantee application-level rendering or
-display routing has recovered.
+The helper can still fail to restore an adapter, or be forcibly terminated. There
+is no persistent recovery journal for a terminated helper. Recovery is bounded;
+an unresolved device is reported, not guaranteed repaired. Logging across two
+processes or different elevation accounts remains a follow-up (View Log opens
+only the current account's log).
+
+A default mutex security descriptor is used; lock access/inspection errors block
+operations rather than bypassing exclusion. This is conservative handling, not
+proof of compatibility across every account/session arrangement. Device startup
+verification does not guarantee application-level rendering or display routing
+has recovered.

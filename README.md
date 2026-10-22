@@ -80,7 +80,8 @@ For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switchin
 - **Right‑click Context Menu**:
   - **Start with Windows**: Toggles a startup entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
   - **Restart Display Adapters**: Safely cycles physical display adapters via elevated helper to fix rendering stutters, then automatically restarts the utility (requires UAC confirmation).
-  - **Exit**: Cleanly releases the DirectX context and terminates the program.
+  - **View Log**: Opens the current user's diagnostic log.
+  - **Exit**: Cleanly releases the DirectX context and terminates the program; disabled while a reset is being monitored.
 
 ---
 
@@ -103,7 +104,7 @@ For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switchin
 2. **Adapter Classification & LUID Tracking**: Enumerates all DXGI adapters, removes software renderers (`DXGI_ADAPTER_FLAG_SOFTWARE`), and classifies discrete candidates (NVIDIA, AMD dGPU, Intel Arc) separate from integrated APUs. Remembers the preferred adapter via its Windows **Locally Unique Identifier (LUID)** so transient disconnects do not trap the system into integrated graphics.
 3. **Direct3D 11 Pinning**: Creates a persistent `ID3D11Device` on the selected discrete adapter with `D3D11_CREATE_DEVICE_BGRA_SUPPORT`. This signals the graphics driver that a high-performance 3D process is active, preventing the GPU from entering deep sleep and keeping Advanced Optimus routed to the discrete GPU.
 4. **State-Driven, Lightweight Lifecycle**: An explicit state machine (`Active`, `WaitingForDiscreteGpu`, `DeviceLost`, `Resetting`) handles adapter loss, eGPU hot-plugging via `WM_DEVICECHANGE`, system sleep/resume (`WM_POWERBROADCAST`), and taskbar recreation with negligible resident CPU impact.
-5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles PCI display adapters via CfgMgr32, poll-verifies driver initialization with `CM_Get_DevNode_Status` (`DN_STARTED`, problem code 0), and propagates verified status back to the parent.
+5. **Deterministic Driver Reset**: When display restart is requested, an elevated helper cycles PCI display adapters via CfgMgr32, preserves initially disabled or stopped adapters, retries recovery with refreshed device nodes, poll-verifies driver initialization, and propagates status back to the parent. A machine-wide mutex excludes competing helpers. The tray monitors completion without a background wait thread; after 60 seconds it warns and keeps monitoring, with acquisition and another reset still blocked.
 
 ---
 
@@ -141,7 +142,7 @@ Run the acquisition regression tests with `ctest --test-dir build -C Release --o
 
 ## Troubleshooting & Diagnostics
 
-- **Diagnostic Logs**: A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (capped at 16 KB with automatic rotation). Check this file if a device fails to acquire or to inspect detected adapter scores.
+- **Diagnostic Logs**: Use **View Log** in the tray menu. Startup records the version and build commit (or `unknown` when built without Git metadata). A rolling log file is written to `%LOCALAPPDATA%\GPU-Switcher\gpu_switcher.log` (capped at 16 KB with automatic rotation). Check this file if a device fails to acquire or to inspect detected adapter scores.
 - **Display Stuttering**: If your laptop panel stutters after switching display modes, use **Restart Display Adapters** from the tray menu to reload the graphics driver stack without rebooting Windows.
 - **Display Not Switching**: Ensure you have configured the program profile in Windows Graphics Settings and NVIDIA Control Panel as described in the [One-Time GPU Preference Setup](#one-time-gpu-preference-setup).
 
