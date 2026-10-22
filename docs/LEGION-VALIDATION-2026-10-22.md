@@ -10,7 +10,7 @@
   connections were not recorded in the report; do not infer them.
 - Evidence: user reports and successive rolling-log snapshots named
   `gpu_switcher.log`, `gpu_switcher (2).log`, `gpu_switcher (3).log`, and
-  `gpu_switcher(1).log` through `gpu_switcher(6).log` supplied in the development
+  `gpu_switcher(1).log` through `gpu_switcher(8).log` supplied in the development
   conversation. Raw logs are not included here. Times below are copied from the
   logs without timezone conversion.
 
@@ -121,6 +121,28 @@ No subsequent startup appears in this snapshot. Together with the user's
 confirmation, this passes the corrected successful reset-to-exit scenario on
 this laptop. The log establishes reset recovery and process exit; final display
 routing and GPU inactivity remain hardware observations.
+
+## Final candidate smoke checks: build fe1e2a49187a
+
+The final tested executable came from PR #5's merge build `fe1e2a49187a`.
+Its tree is identical to source commit `772d591597ef12d1f985c1f1a454772bdf7a6278`.
+PR #5 was subsequently merged as `be7c45d38602fe498347d62a9a9a7948a1755ef3`.
+The main-branch Windows build and all four CTest suites passed for that merge
+([run 39832853555](https://github.com/Tiflit/GPU-Switcher/actions/runs/39832853555)).
+
+| Scenario | Evidence and result |
+| --- | --- |
+| Startup | `gpu_switcher(7).log`: started 14:29:58, NVIDIA device active 14:30:06; user reported successful switching. |
+| Sleep/resume | Suspend released the device at 14:30:27; resume scheduled at 14:30:37; one delayed acquisition completed at 14:30:39. |
+| Reset-to-exit | Reset requested 14:30:57; both adapters recovered after first enable requests with problem 0; Success in 7094 ms; clean exit without relaunch at 14:31:09. |
+| Windows Explorer restart | User separately restarted Windows Explorer and confirmed that the tray icon survived. This observation is not explicitly logged. |
+| Ordinary Exit after Explorer restart | `gpu_switcher(8).log`: started 14:32:59, device active 14:33:05, device release and clean exit 14:33:37. |
+| Icon transitions | User visually confirmed brief yellow during startup/display switching, followed by NVIDIA green. Yellow denotes a non-Active application state; green denotes an active held NVIDIA device, not a measured panel route. |
+
+These smoke checks cover the updated startup order and normal tray restoration.
+They do not inject tray registration or timer allocation failures. The missing
+resume-timer deadline fallback is covered by portable policy regressions; its
+Win32 integration was reviewed in source.
 
 ## Scope and remaining validation
 
