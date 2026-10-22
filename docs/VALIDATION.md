@@ -62,14 +62,15 @@ shows an error dialog, and exits. After Explorer restarts, failed tray restorati
 releases the held device and blocks acquisition until registration succeeds on a
 health check. Reset supervision continues while the icon is unavailable.
 These Win32 failure paths were reviewed in source; automated tests do not inject
-Shell_NotifyIcon or SetTimer failures. Explorer restart and the new startup order
-require a Windows smoke test on the final artifact.
+Shell_NotifyIcon or SetTimer failures. The final candidate passed startup, Windows Explorer restart, and ordinary Exit
+smoke checks on the Legion; injected API failures remain untested.
 
 ## Recorded hardware baseline
 
-See [Legion results for build e147067](LEGION-VALIDATION-2026-10-22.md). The report separately records the successful 1893b60 power-gate retest and an
-expected report of LockApp retaining NVIDIA activity after ordinary Exit. Panel return
-to Intel and complete dGPU inactivity are distinct results.
+See the [Legion validation record](LEGION-VALIDATION-2026-10-22.md) for the
+e147067 baseline, subsequent power-gate and reset-to-exit retests, and final
+fe1e2a4 smoke checks. Panel return to Intel and complete dGPU inactivity are
+distinct results; another Windows client may retain its own NVIDIA context.
 
 ## Legion hardware checks
 

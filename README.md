@@ -142,7 +142,7 @@ cmake --build build --config Release
 
 The compiled binary will be located at `build/Release/GPU-Switcher.exe` (or `build/GPU-Switcher.exe` if using Ninja).
 
-Run the acquisition regression tests with `ctest --test-dir build -C Release --output-on-failure`. See [Validation](docs/VALIDATION.md) for coverage limits and the Legion hardware checklist.
+Run all four regression suites with `ctest --test-dir build -C Release --output-on-failure`. See [Validation](docs/VALIDATION.md) for coverage limits and the Legion hardware checklist.
 
 ---
 
