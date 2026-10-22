@@ -44,7 +44,7 @@ expected. The icon indicates application/device state, not measured panel routin
 Validated on one Lenovo Legion Slim 7 16IRH8 with Intel Iris Xe and an RTX 4060
 Laptop GPU: launch and display switching, sleep/resume, UAC cancellation,
 reset-to-exit, Explorer tray restoration, and ordinary Exit. See
-`docs/LEGION-VALIDATION-2026-10-22.md` for exact tested builds and evidence.
+[the validation record](https://github.com/Tiflit/GPU-Switcher/blob/v1.2.0/docs/LEGION-VALIDATION-2026-10-22.md) for exact tested builds and evidence.
 
 The automated suites cover acquisition ordering/lifetime, power transitions,
 reset policy, and cross-process reset exclusion. They do not reset physical
