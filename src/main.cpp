@@ -87,6 +87,7 @@ static ComPtr<ID3D11Device>                 g_device;
 static ComPtr<ID3D11DeviceContext>          g_context;
 static NOTIFYICONDATAW                      g_nid               = {};
 static UINT                                 g_taskbarCreatedMsg = 0;
+static bool                                 g_trayAvailable     = false;
 
 static AppState                             g_appState          = AppState::NoDiscreteGpu;
 static UINT                                 g_activeVendorId    = 0;
@@ -233,8 +234,15 @@ struct PendingGpu
     ComPtr<ID3D11DeviceContext> context;
 };
 
+static void ScheduleResumeTimer(HWND hwnd, unsigned delay)
+{
+    if (!SetTimer(hwnd, TIMER_RESUME_REACQUIRE, delay, nullptr))
+        LogError(L"Could not schedule resume timer; periodic health check will complete the resume delay");
+}
+
 static bool AcquireDGpu()
 {
+    if (!g_trayAvailable) return false;
     // All acquisition paths must leave devices alone while the helper resets them.
     if (g_appState == AppState::Resetting || g_resetWatch.Active())
         return false;
@@ -243,8 +251,7 @@ static bool AcquireDGpu()
         // Reset start can cancel a pending resume timer. Rearm the remaining
         // delay on its cancellation/failure path instead of acquiring early.
         if (g_powerGate.AwaitingResume())
-            SetTimer(g_window, TIMER_RESUME_REACQUIRE,
-                g_powerGate.RemainingDelay(GetTickCount64()), nullptr);
+            ScheduleResumeTimer(g_window, g_powerGate.RemainingDelay(GetTickCount64()));
         return false;
     }
     if (reset::Active())
@@ -522,13 +529,34 @@ static void PollReset(HWND hwnd)
     }
 }
 
+static bool RegisterTrayIcon()
+{
+    g_trayAvailable = false;
+    if (!Shell_NotifyIconW(NIM_ADD, &g_nid))
+    {
+        LogError(L"Could not register tray icon");
+        return false;
+    }
+    g_nid.uVersion = NOTIFYICON_VERSION_4;
+    if (!Shell_NotifyIconW(NIM_SETVERSION, &g_nid))
+    {
+        LogError(L"Could not set tray callback version");
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        return false;
+    }
+    g_trayAvailable = true;
+    return true;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == g_taskbarCreatedMsg)
     {
-        Shell_NotifyIconW(NIM_ADD, &g_nid);
-        g_nid.uVersion = NOTIFYICON_VERSION_4;
-        Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+        if (!RegisterTrayIcon())
+        {
+            ReleaseDGpu();
+            LogError(L"Tray restoration failed; GPU released, retrying at the next health check");
+        }
         UpdateTrayStatus();
         return 0;
     }
@@ -771,7 +799,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 UpdateTrayStatus();
             else
                 UpdateTrayStatus(L"GPU-Switcher: Resuming…");
-            SetTimer(hwnd, TIMER_RESUME_REACQUIRE, 1500, nullptr);
+            ScheduleResumeTimer(hwnd, 1500);
         }
         return TRUE;
 
@@ -833,8 +861,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             {
                 KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
                 if (g_powerGate.AwaitingResume())
-                    SetTimer(hwnd, TIMER_RESUME_REACQUIRE,
-                        g_powerGate.RemainingDelay(GetTickCount64()), nullptr);
+                    ScheduleResumeTimer(hwnd, g_powerGate.RemainingDelay(GetTickCount64()));
                 return 0;
             }
             KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
@@ -850,12 +877,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (wParam == TIMER_HEALTH_CHECK)
         {
+            // Explorer may have been unavailable when TaskbarCreated arrived.
+            // Keep reset supervision alive, but never hold a GPU invisibly.
+            if (!g_trayAvailable && RegisterTrayIcon())
+                UpdateTrayStatus();
             if (g_resetWatch.Active())
             {
                 PollReset(hwnd); // Fallback if the dedicated timer could not be established.
                 return 0;
             }
-            if (!g_powerGate.CanAcquire())
+            // This also completes the delay when SetTimer for resume failed.
+            if (g_powerGate.CompleteResume(GetTickCount64()))
+            {
+                KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
+                LogInfo(L"Periodic health check completed resume delay — recovering dGPU");
+            }
+            if (!g_powerGate.CanAcquire() || !g_trayAvailable)
                 return 0;
             if (g_appState == AppState::Active && g_device)
             {
@@ -1077,9 +1114,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     g_window = hwnd;
     Sleep(200);
 
-    if (!AcquireDGpu())
-        LogError(L"Failed to acquire discrete GPU on startup");
-
     g_nid.cbSize           = sizeof(g_nid);
     g_nid.hWnd             = hwnd;
     g_nid.uID              = TRAY_ID;
@@ -1091,12 +1125,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     UpdateTrayStatus();
 
-    Shell_NotifyIconW(NIM_ADD, &g_nid);
-    g_nid.uVersion = NOTIFYICON_VERSION_4;
-    Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
-
-    // Periodic health check every 30 seconds
-    SetTimer(hwnd, TIMER_HEALTH_CHECK, 30000, nullptr);
+    // Establish the visible control and fallback timer before holding a GPU.
+    const bool trayReady = RegisterTrayIcon();
+    const bool healthReady = trayReady && SetTimer(hwnd, TIMER_HEALTH_CHECK, 30000, nullptr) != 0;
+    if (!healthReady)
+    {
+        LogError(L"Tray or health timer initialization failed; exiting without acquiring a GPU");
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        DestroyWindow(hwnd);
+        CloseHandle(g_hMutex);
+        g_hMutex = nullptr;
+        MessageBoxW(nullptr, L"Could not initialize the tray icon or health timer. GPU-Switcher has exited. See the log for details.",
+            L"GPU-Switcher", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    if (!AcquireDGpu())
+        LogError(L"Failed to acquire discrete GPU on startup");
+    UpdateTrayStatus();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0))

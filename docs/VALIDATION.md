@@ -48,6 +48,23 @@ delay, duplicate resume notifications, stale/early timers, another suspend durin
 a pending wake, and rearming a resume timer cancelled by reset. The gate is used
 by the actual acquisition path; the tests do not simulate Windows message delivery.
 
+## Timer and tray failure handling
+
+The health check can complete an elapsed resume delay if the dedicated resume
+timer was not delivered or could not be created. Power-transition regressions
+cover this delayed fallback, reject early completion, and preserve a subsequent
+suspend. Normal resume still uses the 1500 ms timer; fallback may take until the
+next 30-second health check.
+
+Startup checks tray registration, callback-version negotiation, and creation of
+the health timer before acquiring a GPU. Initialization failure logs an error,
+shows an error dialog, and exits. After Explorer restarts, failed tray restoration
+releases the held device and blocks acquisition until registration succeeds on a
+health check. Reset supervision continues while the icon is unavailable.
+These Win32 failure paths were reviewed in source; automated tests do not inject
+Shell_NotifyIcon or SetTimer failures. Explorer restart and the new startup order
+require a Windows smoke test on the final artifact.
+
 ## Recorded hardware baseline
 
 See [Legion results for build e147067](LEGION-VALIDATION-2026-10-22.md). The report separately records the successful 1893b60 power-gate retest and an
