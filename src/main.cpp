@@ -59,6 +59,10 @@ static void ReleaseDGpu()
 
 static bool AcquireDGpu()
 {
+    // Every acquisition path must leave the devices alone while the helper resets them.
+    if (g_resetInProgress)
+        return false;
+
     ReleaseDGpu();
 
     ComPtr<IDXGIFactory1> factory;
@@ -319,6 +323,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     break;
 
                 g_resetInProgress = true;
+                KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
                 UpdateTrayStatus(L"GPU-Switcher: Restarting display adapters…");
                 LogInfo(L"Restart Display Adapters requested");
 
@@ -413,6 +418,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)
         {
+            // The reset completion/cancellation path owns recovery until the helper exits.
+            if (g_resetInProgress)
+                return TRUE;
+
             LogInfo(L"System resumed — scheduling dGPU re-acquisition");
             ReleaseDGpu();
             UpdateTrayStatus(L"GPU-Switcher: Resuming…");
@@ -424,6 +433,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == TIMER_RESUME_REACQUIRE)
         {
             KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
+            // KillTimer does not remove a WM_TIMER message that is already queued.
+            if (g_resetInProgress)
+                return 0;
+
             LogInfo(L"Power resume timer fired — re-acquiring dGPU");
             if (!AcquireDGpu())
             {
