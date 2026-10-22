@@ -10,7 +10,7 @@
   connections were not recorded in the report; do not infer them.
 - Evidence: user reports and successive rolling-log snapshots named
   `gpu_switcher.log`, `gpu_switcher (2).log`, `gpu_switcher (3).log`, and
-  `gpu_switcher(1).log` through `gpu_switcher(4).log` supplied in the development
+  `gpu_switcher(1).log` through `gpu_switcher(6).log` supplied in the development
   conversation. Raw logs are not included here. Times below are copied from the
   logs without timezone conversion.
 
@@ -99,9 +99,28 @@ in commit `65f60ab` (before the current development session), and was carried in
 this draft. The subsequent correction removes it on verified success.
 
 Partial or failed resets retain supervision/recovery and a visible warning;
-UAC cancellation retains the previous reacquisition behavior. The corrected
-successful reset-to-exit path requires a fresh manual test. Clearing existing
+UAC cancellation retains the previous reacquisition behavior. Clearing existing
 contexts cannot prevent another application from acquiring the GPU later.
+
+## Reset-to-exit retest: build 8fe69f0d61d2
+
+The user tested the corrected artifact and reported it working as intended.
+The supplied `gpu_switcher(6).log` identifies build `8fe69f0d61d2` (full commit
+`8fe69f0d61d280e8e2ffe7b9f12f32a496172b38`).
+
+| Time | Log evidence |
+| --- | --- |
+| 13:11:18–13:11:26 | Process started and acquired the NVIDIA D3D11 device. |
+| 13:11:35 | Entered Resetting and requested Restart Display Adapters. |
+| 13:11:37 | Elevated helper started; both adapters were initially started and enabled. |
+| 13:11:41 | Intel recovered after its first enable request, with problem 0. |
+| 13:11:44 | NVIDIA recovered after its first enable request, with problem 0; helper reported Success after 6547 ms. |
+| 13:11:46 | Parent explicitly logged exit without relaunch, followed by clean exit. |
+
+No subsequent startup appears in this snapshot. Together with the user's
+confirmation, this passes the corrected successful reset-to-exit scenario on
+this laptop. The log establishes reset recovery and process exit; final display
+routing and GPU inactivity remain hardware observations.
 
 ## Scope and remaining validation
 
