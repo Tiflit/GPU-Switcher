@@ -11,6 +11,7 @@
 
 #include "resource.h"
 #include "gpu/acquisition.h"
+#include "gpu/power_gate.h"
 #include "reset/reset_lock.h"
 #include "reset/reset_policy.h"
 #include "build_info.h"
@@ -81,6 +82,7 @@ static HANDLE                               g_hMutex            = nullptr;
 static HWND                                 g_window            = nullptr;
 static HANDLE                               g_resetProcess      = nullptr;
 static reset::Watch                         g_resetWatch;
+static gpu::PowerGate                       g_powerGate;
 static ComPtr<ID3D11Device>                 g_device;
 static ComPtr<ID3D11DeviceContext>          g_context;
 static NOTIFYICONDATAW                      g_nid               = {};
@@ -236,6 +238,15 @@ static bool AcquireDGpu()
     // All acquisition paths must leave devices alone while the helper resets them.
     if (g_appState == AppState::Resetting || g_resetWatch.Active())
         return false;
+    if (!g_powerGate.CanAcquire())
+    {
+        // Reset start can cancel a pending resume timer. Rearm the remaining
+        // delay on its cancellation/failure path instead of acquiring early.
+        if (g_powerGate.AwaitingResume())
+            SetTimer(g_window, TIMER_RESUME_REACQUIRE,
+                g_powerGate.RemainingDelay(GetTickCount64()), nullptr);
+        return false;
+    }
     if (reset::Active())
     {
         ReleaseDGpu();
@@ -758,19 +769,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_POWERBROADCAST:
         if (wParam == PBT_APMSUSPEND)
         {
+            g_powerGate.Suspend();
+            KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
             LogInfo(L"System entering suspend — releasing dGPU");
             ReleaseDGpu();
-            UpdateTrayStatus(L"GPU-Switcher: Suspended");
+            if (g_appState == AppState::Resetting)
+                UpdateTrayStatus();
+            else
+                UpdateTrayStatus(L"GPU-Switcher: Suspended");
         }
         else if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)
         {
-            // The reset completion/cancellation path owns recovery until the helper exits.
-            if (g_appState == AppState::Resetting)
+            // Windows can deliver both notifications for the same wake. Keep
+            // one delay, and update power state even while a reset is active.
+            if (!g_powerGate.Resume(GetTickCount64()))
                 return TRUE;
-
             LogInfo(L"System resumed — scheduling dGPU re-acquisition");
             ReleaseDGpu();
-            UpdateTrayStatus(L"GPU-Switcher: Resuming…");
+            if (g_appState == AppState::Resetting)
+                UpdateTrayStatus();
+            else
+                UpdateTrayStatus(L"GPU-Switcher: Resuming…");
             SetTimer(hwnd, TIMER_RESUME_REACQUIRE, 1500, nullptr);
         }
         return TRUE;
@@ -779,7 +798,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // 0x0007 = DBT_DEVNODES_CHANGED
         if (wParam == 0x0007)
         {
-            if (g_appState != AppState::Resetting)
+            if (g_appState != AppState::Resetting && g_powerGate.CanAcquire())
             {
                 LogInfo(L"Hardware devnodes changed — verifying GPU status");
                 if (g_appState == AppState::Active && g_device)
@@ -827,9 +846,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         if (wParam == TIMER_RESUME_REACQUIRE)
         {
+            // Ignore stale/early timer messages, including timers from a
+            // previous wake or timers already queued when suspend began.
+            if (!g_powerGate.CompleteResume(GetTickCount64()))
+            {
+                KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
+                if (g_powerGate.AwaitingResume())
+                    SetTimer(hwnd, TIMER_RESUME_REACQUIRE,
+                        g_powerGate.RemainingDelay(GetTickCount64()), nullptr);
+                return 0;
+            }
             KillTimer(hwnd, TIMER_RESUME_REACQUIRE);
-            // KillTimer does not remove a WM_TIMER message that is already queued.
-            if (g_appState == AppState::Resetting)
+            if (g_appState == AppState::Resetting || g_resetWatch.Active())
                 return 0;
 
             LogInfo(L"Power resume timer fired — re-acquiring dGPU");
@@ -846,6 +874,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 PollReset(hwnd); // Fallback if the dedicated timer could not be established.
                 return 0;
             }
+            if (!g_powerGate.CanAcquire())
+                return 0;
             if (g_appState == AppState::Active && g_device)
             {
                 HRESULT hr = g_device->GetDeviceRemovedReason();

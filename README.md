@@ -69,6 +69,12 @@ For NVIDIA Advanced Optimus laptops to trigger dynamic internal display switchin
 5. Ensure **Automatic display switching** is enabled in your global display mode settings.
 6. Right-click the tray icon and select **Exit**, then relaunch `GPU-Switcher.exe`.
 
+If configuring the executable through **NVIDIA App**, set its program option
+**Automatic Display Switching** to **On**, then fully exit and relaunch the
+utility. The [Legion validation report](docs/LEGION-VALIDATION-2026-10-22.md)
+records successful ordinary launch switching after recreating that program
+profile; a display-adapter reset was not required for that first successful launch.
+
 *After this one-time configuration, launching GPU-Switcher will consistently trigger discrete GPU pinning and Advanced Optimus display switching.*
 
 ---

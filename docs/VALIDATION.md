@@ -3,7 +3,7 @@
 ## Automated checks
 
 The Windows build workflow compiles the application and runs acquisition, reset
-policy, and cross-process reset-lock regressions with CTest. The tests use the same ordering and replacement helper
+policy, power-transition, and cross-process reset-lock regressions with CTest. The tests use the same ordering and replacement helper
 as the application, with simulated resources and creation failures.
 
 ```powershell
@@ -12,13 +12,15 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The acquisition and reset-policy tests are independent of Windows headers:
+The acquisition, reset-policy, and power-transition tests are independent of Windows headers:
 
 ```sh
 g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/acquisition_tests.cpp -o acquisition_tests
 ./acquisition_tests
 g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/reset_policy_tests.cpp -o reset_policy_tests
 ./reset_policy_tests
+g++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/power_gate_tests.cpp -o power_gate_tests
+./power_gate_tests
 ```
 
 Coverage includes preferred/current/score ordering, equal-score ties, successful
@@ -40,6 +42,17 @@ check rejection while locked, admission after release, and conservative failure
 when the mutex name is occupied by a different object type. No test calls the
 physical device-reset APIs. Cross-account UAC and cross-session behavior still
 require manual validation.
+
+Power-transition tests cover acquisition exclusion while suspended, the resume
+delay, duplicate resume notifications, stale/early timers, another suspend during
+a pending wake, and rearming a resume timer cancelled by reset. The gate is used
+by the actual acquisition path; the tests do not simulate Windows message delivery.
+
+## Recorded hardware baseline
+
+See [Legion results for build e147067](LEGION-VALIDATION-2026-10-22.md). Later
+power-transition changes require another sleep/resume check; the baseline must
+not be attributed to those later commits.
 
 ## Legion hardware checks
 
